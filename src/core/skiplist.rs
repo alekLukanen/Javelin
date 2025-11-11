@@ -88,8 +88,6 @@ impl SkipList {
 
         let mut current = self.head.clone();
 
-        // Traverse top-down to fill update array
-
         for i in (0..level).rev() {
             loop {
                 let next_opt = current.borrow().levels[i].clone();
@@ -103,13 +101,21 @@ impl SkipList {
                         };
                         match next_key.as_slice().cmp(&*key) {
                             Ordering::Less => {
-                                drop(next_borrow); // release before moving
+                                drop(next_borrow);
                                 current = next.clone();
                             }
                             Ordering::Equal => {
-                                drop(next_borrow); // release before mutating
-                                next.borrow_mut().log_entry = log_entry.clone();
-                                return;
+                                if log_entry.log_seq_num > next_borrow.log_entry.log_seq_num {
+                                    break;
+                                } else if log_entry.log_seq_num == next_borrow.log_entry.log_seq_num
+                                {
+                                    panic!(
+                                        "trying to update a value in a previous log sequence number",
+                                    );
+                                } else {
+                                    drop(next_borrow);
+                                    current = next.clone();
+                                }
                             }
                             Ordering::Greater => break,
                         }
@@ -134,7 +140,7 @@ impl SkipList {
         }
     }
 
-    pub fn get(&self, key: &Vec<u8>) -> Option<LogEntry> {
+    pub fn get(&self, key: &Vec<u8>, log_seq_num: u64) -> Option<LogEntry> {
         let mut current = self.head.clone();
 
         for i in (0..self.num_levels).rev() {
@@ -160,7 +166,11 @@ impl SkipList {
                         current = next.clone();
                     }
                     std::cmp::Ordering::Equal => {
-                        return Some(next_borrow.log_entry.clone());
+                        if next_borrow.log_entry.log_seq_num <= log_seq_num {
+                            return Some(next_borrow.log_entry.clone());
+                        }
+                        drop(next_borrow);
+                        current = next.clone();
                     }
                     std::cmp::Ordering::Greater => break,
                 }
