@@ -46,10 +46,10 @@ pub struct SkipList {
 }
 
 impl SkipList {
-    pub fn new(probability: f64, expected_num_keys: i32, allowed_max_level: usize) -> Self {
+    pub fn new(probability: f64, expected_num_keys: u32, allowed_max_level: u32) -> Self {
         let base = 1.0 / probability;
         let mut num_levels = (expected_num_keys as f64).log(base).ceil() as usize;
-        num_levels = allowed_max_level.min(num_levels);
+        num_levels = (allowed_max_level as usize).min(num_levels);
 
         let head = Rc::new(RefCell::new(Node {
             log_entry: LogEntry {
