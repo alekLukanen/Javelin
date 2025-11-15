@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use super::{db_config::DBConfig, entry::LogEntry, skiplist::SkipList};
+use super::{db_context::DBContext, entry::LogEntry, skiplist::SkipList};
 
 ///////////////////////////////////////
 
@@ -47,13 +47,15 @@ impl From<MemtableError> for MemtableHandlerError {
 pub struct MemtableHandler {
     active_memtable: Memtable,
     immutable_memtables: Mutex<Vec<Arc<ImmutableMemtable>>>,
+    db_context: Arc<DBContext>,
 }
 
 impl MemtableHandler {
-    pub fn new(config: DBConfig) -> MemtableHandler {
+    pub fn new(db_context: Arc<DBContext>) -> MemtableHandler {
         MemtableHandler {
-            active_memtable: Memtable::new(config),
+            active_memtable: Memtable::new(db_context.clone()),
             immutable_memtables: Mutex::new(Vec::new()),
+            db_context,
         }
     }
 
@@ -114,16 +116,18 @@ impl<T> From<std::sync::PoisonError<std::sync::MutexGuard<'_, T>>> for MemtableE
 
 pub struct Memtable {
     skip_list: Mutex<SkipList>,
+    db_context: Arc<DBContext>,
 }
 
 impl Memtable {
-    pub fn new(config: DBConfig) -> Memtable {
+    pub fn new(db_context: Arc<DBContext>) -> Memtable {
         Memtable {
             skip_list: Mutex::new(SkipList::new(
-                config.memtable_probability(),
-                config.memtable_expected_num_keys(),
-                config.memtable_allowed_max_levels(),
+                db_context.config().memtable_probability(),
+                db_context.config().memtable_expected_num_keys(),
+                db_context.config().memtable_allowed_max_levels(),
             )),
+            db_context,
         }
     }
 
@@ -170,12 +174,19 @@ impl<T> From<std::sync::PoisonError<T>> for ImmutableMemtableError {
 
 pub struct ImmutableMemtable {
     skip_list: SkipList,
+    db_context: Arc<DBContext>,
 }
 
 impl ImmutableMemtable {
-    pub fn new(memtable: Memtable) -> Result<ImmutableMemtable, ImmutableMemtableError> {
+    pub fn new(
+        db_context: Arc<DBContext>,
+        memtable: Memtable,
+    ) -> Result<ImmutableMemtable, ImmutableMemtableError> {
         let skip_list = memtable.skip_list.into_inner()?;
-        Ok(ImmutableMemtable { skip_list })
+        Ok(ImmutableMemtable {
+            db_context,
+            skip_list,
+        })
     }
 
     pub fn get(&self, key: &Vec<u8>, log_seq_num: u64) -> Option<LogEntry> {

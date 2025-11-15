@@ -1,4 +1,4 @@
-use std::{cell::RefCell, cmp::Ordering, error::Error, fmt::Display, rc::Rc, sync::Mutex};
+use std::{cell::RefCell, cmp::Ordering, error::Error, fmt::Display, rc::Rc};
 
 use super::entry::{Entry, LogEntry};
 
