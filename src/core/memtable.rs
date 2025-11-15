@@ -4,62 +4,67 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use super::{db_context::DBContext, entry::LogEntry, skiplist::SkipList};
+use super::{
+    db_context::DBContext, entry::LogEntry, memory_manager::MemoryManager, skiplist::SkipList,
+};
 
 ///////////////////////////////////////
 
 #[derive(Debug)]
-pub enum MemtableHandlerError {
+pub enum MemtableManagerError {
     MutexLockFailed(String),
     MemtableError(MemtableError),
 }
 
-impl Display for MemtableHandlerError {
+impl Display for MemtableManagerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MemtableHandlerError::MutexLockFailed(e) => write!(f, "MutexLockFailed: {}", e),
-            MemtableHandlerError::MemtableError(e) => write!(f, "MemtableError: {}", e),
+            MemtableManagerError::MutexLockFailed(e) => write!(f, "MutexLockFailed: {}", e),
+            MemtableManagerError::MemtableError(e) => write!(f, "MemtableError: {}", e),
         }
     }
 }
 
-impl Error for MemtableHandlerError {
+impl Error for MemtableManagerError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            MemtableHandlerError::MutexLockFailed(_) => None,
-            MemtableHandlerError::MemtableError(e) => Some(e),
+            MemtableManagerError::MutexLockFailed(_) => None,
+            MemtableManagerError::MemtableError(e) => Some(e),
         }
     }
 }
 
-impl<T> From<std::sync::PoisonError<std::sync::MutexGuard<'_, T>>> for MemtableHandlerError {
+impl<T> From<std::sync::PoisonError<std::sync::MutexGuard<'_, T>>> for MemtableManagerError {
     fn from(value: std::sync::PoisonError<std::sync::MutexGuard<'_, T>>) -> Self {
-        MemtableHandlerError::MutexLockFailed(value.to_string())
+        MemtableManagerError::MutexLockFailed(value.to_string())
     }
 }
 
-impl From<MemtableError> for MemtableHandlerError {
+impl From<MemtableError> for MemtableManagerError {
     fn from(value: MemtableError) -> Self {
-        MemtableHandlerError::MemtableError(value)
+        MemtableManagerError::MemtableError(value)
     }
 }
 
-pub struct MemtableHandler {
+pub struct MemtableManager {
     active_memtable: Memtable,
     immutable_memtables: Mutex<Vec<Arc<ImmutableMemtable>>>,
+
+    memory: Arc<MemoryManager>,
     db_context: Arc<DBContext>,
 }
 
-impl MemtableHandler {
-    pub fn new(db_context: Arc<DBContext>) -> MemtableHandler {
-        MemtableHandler {
-            active_memtable: Memtable::new(db_context.clone()),
+impl MemtableManager {
+    pub fn new(db_context: Arc<DBContext>, memory: Arc<MemoryManager>) -> MemtableManager {
+        MemtableManager {
+            active_memtable: Memtable::new(db_context.clone(), memory.clone()),
             immutable_memtables: Mutex::new(Vec::new()),
+            memory,
             db_context,
         }
     }
 
-    pub fn insert(&self, log_entry: LogEntry) -> Result<(), MemtableHandlerError> {
+    pub fn insert(&self, log_entry: LogEntry) -> Result<(), MemtableManagerError> {
         Ok(self.active_memtable.insert(log_entry)?)
     }
 
@@ -67,7 +72,7 @@ impl MemtableHandler {
         &self,
         key: &Vec<u8>,
         log_seq_num: u64,
-    ) -> Result<Option<LogEntry>, MemtableHandlerError> {
+    ) -> Result<Option<LogEntry>, MemtableManagerError> {
         let val = self.active_memtable.get(key, log_seq_num)?;
         if val.is_some() {
             return Ok(val);
@@ -116,17 +121,19 @@ impl<T> From<std::sync::PoisonError<std::sync::MutexGuard<'_, T>>> for MemtableE
 
 pub struct Memtable {
     skip_list: Mutex<SkipList>,
+    memory: Arc<MemoryManager>,
     db_context: Arc<DBContext>,
 }
 
 impl Memtable {
-    pub fn new(db_context: Arc<DBContext>) -> Memtable {
+    pub fn new(db_context: Arc<DBContext>, memory: Arc<MemoryManager>) -> Memtable {
         Memtable {
             skip_list: Mutex::new(SkipList::new(
                 db_context.config().memtable_probability(),
                 db_context.config().memtable_expected_num_keys(),
                 db_context.config().memtable_allowed_max_levels(),
             )),
+            memory,
             db_context,
         }
     }
