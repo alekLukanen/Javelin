@@ -19,8 +19,13 @@ impl MemoryManager {
         }
     }
 
-    pub fn new_record(&self, max_usage: usize) -> MemoryRecord {
-        MemoryRecord::new(self.db_context.clone(), self.memory_pool.clone(), max_usage)
+    pub fn new_record(&self, max_usage: usize, allow_first_allocation: bool) -> MemoryRecord {
+        MemoryRecord::new(
+            self.db_context.clone(),
+            self.memory_pool.clone(),
+            max_usage,
+            allow_first_allocation,
+        )
     }
 }
 
@@ -77,13 +82,13 @@ impl MemoryPool {
         }
     }
 
-    pub fn allocate(&self, amount: usize) -> Result<(), MemoryPoolError> {
+    pub fn allocate(&self, amount: usize) -> Result<bool, MemoryPoolError> {
         loop {
             let current = self.usage.load(atomic::Ordering::Relaxed);
             if current + amount <= self.max_usage {
                 let old = self.usage.fetch_add(amount, atomic::Ordering::Relaxed);
                 if old + amount <= self.max_usage {
-                    return Ok(());
+                    return Ok(true);
                 }
                 self.usage.fetch_sub(amount, atomic::Ordering::Relaxed);
             }
@@ -174,6 +179,7 @@ pub struct MemoryRecord {
     primary_manager: Arc<MemoryPool>,
     usage: atomic::AtomicUsize,
     max_usage: usize,
+    allow_first_allocation: bool,
 
     db_context: Arc<DBContext>,
 }
@@ -183,22 +189,24 @@ impl MemoryRecord {
         db_context: Arc<DBContext>,
         primary_manager: Arc<MemoryPool>,
         max_usage: usize,
+        allow_first_allocation: bool,
     ) -> MemoryRecord {
         MemoryRecord {
             primary_manager,
             usage: atomic::AtomicUsize::new(0),
             max_usage,
+            allow_first_allocation,
             db_context,
         }
     }
 
-    pub fn allocate(&self, amount: usize) -> Result<(), MemoryRecordError> {
+    pub fn allocate(&self, amount: usize) -> Result<bool, MemoryRecordError> {
         let old = self.usage.fetch_add(amount, atomic::Ordering::Relaxed);
-        if old + amount > self.max_usage {
-            return Err(MemoryRecordError::RecordOutOfMemory);
+        if old + amount > self.max_usage && !(old == 0 && self.allow_first_allocation) {
+            return Ok(false);
         }
-        self.primary_manager.allocate(amount)?;
-        Ok(())
+        let allocated = self.primary_manager.allocate(amount)?;
+        Ok(allocated)
     }
 
     pub fn deallocate(&self, amount: usize) -> Result<(), MemoryRecordError> {

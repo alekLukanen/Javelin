@@ -5,6 +5,7 @@ pub struct DBConfig {
     memtable_allowed_max_levels: u32,
 
     memory_manager_max_memory_usage: usize,
+    memory_manager_max_memtable_memory_usage: usize,
 
     logging_enabled: bool,
 }
@@ -26,6 +27,10 @@ impl DBConfig {
         self.memory_manager_max_memory_usage.clone()
     }
 
+    pub fn memory_manager_max_memtable_memory_usage(&self) -> usize {
+        self.memory_manager_max_memtable_memory_usage.clone()
+    }
+
     pub fn logging_enabled(&self) -> bool {
         self.logging_enabled
     }
@@ -43,12 +48,18 @@ impl DBConfigBuilder {
                 memtable_expected_num_keys: 10_000,
                 memtable_allowed_max_levels: 32,
                 memory_manager_max_memory_usage: 100 * (1 << 20),
+                memory_manager_max_memtable_memory_usage: 10 * (1 << 20),
                 logging_enabled: false,
             },
         }
     }
 
     pub fn build(self) -> DBConfig {
+        if self.config.memory_manager_max_memtable_memory_usage
+            > self.config.memory_manager_max_memory_usage
+        {
+            panic!("memtable memory usage greater than max memory manager memory usage");
+        }
         self.config.clone()
     }
 
@@ -69,6 +80,11 @@ impl DBConfigBuilder {
 
     pub fn memory_manager_max_memory_usage(mut self, val: usize) -> DBConfigBuilder {
         self.config.memory_manager_max_memory_usage = val;
+        self
+    }
+
+    pub fn memory_manager_max_memtable_memory_usage(mut self, val: usize) -> DBConfigBuilder {
+        self.config.memory_manager_max_memtable_memory_usage = val;
         self
     }
 

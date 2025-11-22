@@ -5,7 +5,10 @@ use std::{
 };
 
 use super::{
-    db_context::DBContext, entry::LogEntry, memory_manager::MemoryManager, skiplist::SkipList,
+    db_context::DBContext,
+    entry::LogEntry,
+    memory_manager::{MemoryManager, MemoryRecord, MemoryRecordError},
+    skiplist::SkipList,
 };
 
 ///////////////////////////////////////
@@ -14,6 +17,7 @@ use super::{
 pub enum MemtableManagerError {
     MutexLockFailed(String),
     MemtableError(MemtableError),
+    ImmutableMemtableError(ImmutableMemtableError),
 }
 
 impl Display for MemtableManagerError {
@@ -21,6 +25,9 @@ impl Display for MemtableManagerError {
         match self {
             MemtableManagerError::MutexLockFailed(e) => write!(f, "MutexLockFailed: {}", e),
             MemtableManagerError::MemtableError(e) => write!(f, "MemtableError: {}", e),
+            MemtableManagerError::ImmutableMemtableError(e) => {
+                write!(f, "ImmutableMemtableError: {}", e)
+            }
         }
     }
 }
@@ -30,6 +37,7 @@ impl Error for MemtableManagerError {
         match self {
             MemtableManagerError::MutexLockFailed(_) => None,
             MemtableManagerError::MemtableError(e) => Some(e),
+            MemtableManagerError::ImmutableMemtableError(e) => Some(e),
         }
     }
 }
@@ -46,8 +54,14 @@ impl From<MemtableError> for MemtableManagerError {
     }
 }
 
+impl From<ImmutableMemtableError> for MemtableManagerError {
+    fn from(value: ImmutableMemtableError) -> Self {
+        MemtableManagerError::ImmutableMemtableError(value)
+    }
+}
+
 pub struct MemtableManager {
-    active_memtable: Memtable,
+    active_memtable: Mutex<Memtable>,
     immutable_memtables: Mutex<Vec<Arc<ImmutableMemtable>>>,
 
     memory: Arc<MemoryManager>,
@@ -57,7 +71,13 @@ pub struct MemtableManager {
 impl MemtableManager {
     pub fn new(db_context: Arc<DBContext>, memory: Arc<MemoryManager>) -> MemtableManager {
         MemtableManager {
-            active_memtable: Memtable::new(db_context.clone(), memory.clone()),
+            active_memtable: Mutex::new(Memtable::new(
+                db_context.clone(),
+                memory.clone(),
+                db_context
+                    .config()
+                    .memory_manager_max_memtable_memory_usage(),
+            )),
             immutable_memtables: Mutex::new(Vec::new()),
             memory,
             db_context,
@@ -65,7 +85,16 @@ impl MemtableManager {
     }
 
     pub fn insert(&self, log_entry: LogEntry) -> Result<(), MemtableManagerError> {
-        Ok(self.active_memtable.insert(log_entry)?)
+        let inserted = self.active_memtable.lock()?.insert(log_entry)?;
+        if inserted {
+            return Ok(());
+        }
+
+        // the active memtable is full. The active memtable needs to be made into a
+        // immutable memtable and a new active memtable created.
+        self.create_new_active_memtable()?;
+
+        Ok(())
     }
 
     pub fn get(
@@ -73,7 +102,7 @@ impl MemtableManager {
         key: &Vec<u8>,
         log_seq_num: u64,
     ) -> Result<Option<LogEntry>, MemtableManagerError> {
-        let val = self.active_memtable.get(key, log_seq_num)?;
+        let val = self.active_memtable.lock()?.get(key, log_seq_num)?;
         if val.is_some() {
             return Ok(val);
         }
@@ -88,6 +117,25 @@ impl MemtableManager {
 
         Ok(None)
     }
+
+    fn create_new_active_memtable(&self) -> Result<(), MemtableManagerError> {
+        let mut active_memtable_guard = self.active_memtable.lock()?;
+        let old = std::mem::replace(
+            &mut *active_memtable_guard,
+            Memtable::new(
+                self.db_context.clone(),
+                self.memory.clone(),
+                self.db_context
+                    .config()
+                    .memory_manager_max_memtable_memory_usage(),
+            ),
+        );
+
+        let immutable_memtable = Arc::new(ImmutableMemtable::new(self.db_context.clone(), old)?);
+        self.immutable_memtables.lock()?.push(immutable_memtable);
+
+        Ok(())
+    }
 }
 
 ///////////////////////////////////////
@@ -95,12 +143,14 @@ impl MemtableManager {
 #[derive(Debug)]
 pub enum MemtableError {
     MutexLockFailed(String),
+    MemoryRecordError(MemoryRecordError),
 }
 
 impl Display for MemtableError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MemtableError::MutexLockFailed(e) => write!(f, "MutexLockFailed: {}", e),
+            MemtableError::MemoryRecordError(e) => write!(f, "MemoryRecordError: {}", e),
         }
     }
 }
@@ -109,6 +159,7 @@ impl Error for MemtableError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             MemtableError::MutexLockFailed(_) => None,
+            MemtableError::MemoryRecordError(e) => Some(e),
         }
     }
 }
@@ -119,14 +170,27 @@ impl<T> From<std::sync::PoisonError<std::sync::MutexGuard<'_, T>>> for MemtableE
     }
 }
 
+impl From<MemoryRecordError> for MemtableError {
+    fn from(value: MemoryRecordError) -> Self {
+        MemtableError::MemoryRecordError(value)
+    }
+}
+
 pub struct Memtable {
     skip_list: Mutex<SkipList>,
     memory: Arc<MemoryManager>,
     db_context: Arc<DBContext>,
+
+    memory_record: MemoryRecord,
 }
 
 impl Memtable {
-    pub fn new(db_context: Arc<DBContext>, memory: Arc<MemoryManager>) -> Memtable {
+    pub fn new(
+        db_context: Arc<DBContext>,
+        memory: Arc<MemoryManager>,
+        max_size: usize,
+    ) -> Memtable {
+        let record = memory.new_record(max_size, true);
         Memtable {
             skip_list: Mutex::new(SkipList::new(
                 db_context.config().memtable_probability(),
@@ -135,13 +199,19 @@ impl Memtable {
             )),
             memory,
             db_context,
+            memory_record: record,
         }
     }
 
-    pub fn insert(&self, log_entry: LogEntry) -> Result<(), MemtableError> {
-        let guard = self.skip_list.lock()?;
-        guard.insert(log_entry);
-        Ok(())
+    pub fn insert(&self, log_entry: LogEntry) -> Result<bool, MemtableError> {
+        let allocated = self.memory_record.allocate(log_entry.size())?;
+        if allocated {
+            let guard = self.skip_list.lock()?;
+            guard.insert(log_entry);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     pub fn get(&self, key: &Vec<u8>, log_seq_num: u64) -> Result<Option<LogEntry>, MemtableError> {
