@@ -1,4 +1,4 @@
-use std::{cell::RefCell, cmp::Ordering, error::Error, fmt::Display, rc::Rc};
+use std::{cell::RefCell, cmp::Ordering, error::Error, fmt::Display, rc::Rc, sync::Arc};
 
 use super::entry::{Entry, LogEntry};
 
@@ -35,7 +35,7 @@ type NodeLink = Option<Rc<RefCell<Node>>>;
 
 #[derive(Clone)]
 struct Node {
-    log_entry: LogEntry,
+    log_entry: Arc<LogEntry>,
     levels: Vec<NodeLink>,
 }
 
@@ -52,10 +52,10 @@ impl SkipList {
         num_levels = (allowed_max_level as usize).min(num_levels);
 
         let head = Rc::new(RefCell::new(Node {
-            log_entry: LogEntry {
+            log_entry: Arc::new(LogEntry {
                 entry: Entry::Empty,
                 log_seq_num: 0,
-            },
+            }),
             levels: vec![None; num_levels],
         }));
 
@@ -74,7 +74,7 @@ impl SkipList {
         lvl
     }
 
-    pub fn insert(&self, log_entry: LogEntry) {
+    pub fn insert(&self, log_entry: Arc<LogEntry>) {
         let key = match &log_entry.entry {
             Entry::Put { key, .. } => key,
             Entry::Del { key } => key,
@@ -140,7 +140,7 @@ impl SkipList {
         }
     }
 
-    pub fn get(&self, key: &Vec<u8>, log_seq_num: u64) -> Option<LogEntry> {
+    pub fn get(&self, key: &Vec<u8>, log_seq_num: u64) -> Option<Arc<LogEntry>> {
         let mut current = self.head.clone();
 
         for i in (0..self.num_levels).rev() {
@@ -190,4 +190,27 @@ fn rand_bool(prob: f64) -> bool {
         .subsec_nanos();
     let x = (nanos % 1000) as f64 / 1000.0;
     x < prob
+}
+
+impl Display for SkipList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut res = String::new();
+
+        let mut current = self.head.clone();
+        loop {
+            let next_opt = current.borrow().levels[0].clone();
+            let next = match next_opt {
+                Some(n) => n,
+                None => break,
+            };
+
+            // Keep the borrow alive in a variable
+            let next_borrow = next.borrow();
+            res = format!("{}: {:?}", res, next_borrow.log_entry.entry);
+            drop(next_borrow);
+            current = next;
+        }
+
+        write!(f, "{}", res)
+    }
 }

@@ -1,27 +1,29 @@
+use std::sync::Arc;
+
 use super::{
     entry::{Entry, LogEntry},
     skiplist::SkipList,
 };
 
-fn new_put_int_entry(key: i32, log_seq_num: u64) -> LogEntry {
+fn new_put_int_entry(key: i32, log_seq_num: u64) -> Arc<LogEntry> {
     let key_bytes = key.to_be_bytes().to_vec();
-    LogEntry::new(
+    Arc::new(LogEntry::new(
         Entry::Put {
             key: key_bytes.clone(),
             val: key_bytes.clone(),
         },
         log_seq_num,
-    )
+    ))
 }
 
-fn new_del_int_entry(key: i32, log_seq_num: u64) -> LogEntry {
+fn new_del_int_entry(key: i32, log_seq_num: u64) -> Arc<LogEntry> {
     let key_bytes = key.to_be_bytes().to_vec();
-    LogEntry::new(
+    Arc::new(LogEntry::new(
         Entry::Del {
             key: key_bytes.clone(),
         },
         log_seq_num,
-    )
+    ))
 }
 
 #[test]
@@ -57,27 +59,27 @@ fn test_skiplist_with_increasing_insert_keys() -> Result<(), Box<dyn std::error:
 
     for i in 0..1000 as u64 {
         let key = i.to_be_bytes().to_vec();
-        skiplist.insert(LogEntry::new(
+        skiplist.insert(Arc::new(LogEntry::new(
             Entry::Put {
                 key: key.clone(),
                 val: key.clone(),
             },
             i,
-        ));
-        expected_keys.push(key.clone())
+        )));
+        expected_keys.push(key.clone());
     }
 
     for (i, key) in expected_keys.iter().enumerate() {
         let entry = skiplist.get(&key, i as u64);
         let entry_val = entry.expect("expected a log entry");
         assert_eq!(
-            LogEntry::new(
+            Arc::new(LogEntry::new(
                 Entry::Put {
                     key: key.clone(),
                     val: key.clone()
                 },
                 i as u64,
-            ),
+            )),
             entry_val
         );
     }
@@ -93,13 +95,13 @@ fn test_skiplist_with_decreasing_insert_keys() -> Result<(), Box<dyn std::error:
 
     for i in (0..1000 as u64).rev() {
         let key = i.to_be_bytes().to_vec();
-        skiplist.insert(LogEntry::new(
+        skiplist.insert(Arc::new(LogEntry::new(
             Entry::Put {
                 key: key.clone(),
                 val: key.clone(),
             },
             999 - i,
-        ));
+        )));
         expected_keys.push(key.clone())
     }
 
@@ -107,13 +109,13 @@ fn test_skiplist_with_decreasing_insert_keys() -> Result<(), Box<dyn std::error:
         let entry = skiplist.get(&key, i as u64);
         let entry_val = entry.expect("expected a log entry");
         assert_eq!(
-            LogEntry::new(
+            Arc::new(LogEntry::new(
                 Entry::Put {
                     key: key.clone(),
                     val: key.clone()
                 },
                 i as u64
-            ),
+            )),
             entry_val
         );
     }

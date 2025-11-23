@@ -57,23 +57,31 @@ impl DB {
         }
     }
 
-    pub fn get(&self, key: &Vec<u8>) -> Option<Vec<u8>> {
-        None
+    pub fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, DBError> {
+        let val = self.memtable.get(key, self.wal.incr_log_sequence_num())?;
+        match val {
+            Some(val) => match &val.entry {
+                Entry::Put { val, .. } => Ok(Some(val.clone())),
+                Entry::Del { .. } => Ok(None),
+                Entry::Empty => Ok(None),
+            },
+            None => Ok(None),
+        }
     }
 
     pub fn set(&self, key: Vec<u8>, val: Vec<u8>) -> Result<(), DBError> {
-        self.memtable.insert(LogEntry::new(
+        self.memtable.insert(Arc::new(LogEntry::new(
             Entry::Put { key, val },
             self.wal.incr_log_sequence_num(),
-        ))?;
+        )))?;
         Ok(())
     }
 
     pub fn delete(&self, key: Vec<u8>) -> Result<(), DBError> {
-        self.memtable.insert(LogEntry::new(
+        self.memtable.insert(Arc::new(LogEntry::new(
             Entry::Del { key },
             self.wal.incr_log_sequence_num(),
-        ))?;
+        )))?;
         Ok(())
     }
 

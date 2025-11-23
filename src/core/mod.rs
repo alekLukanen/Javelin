@@ -8,4 +8,6 @@ pub mod skiplist;
 pub mod wal;
 
 #[cfg(test)]
+mod test_memtable;
+#[cfg(test)]
 mod test_skiplist;

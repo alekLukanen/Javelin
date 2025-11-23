@@ -18,6 +18,7 @@ pub enum MemtableManagerError {
     MutexLockFailed(String),
     MemtableError(MemtableError),
     ImmutableMemtableError(ImmutableMemtableError),
+    UnableToInsertEntry,
 }
 
 impl Display for MemtableManagerError {
@@ -28,6 +29,7 @@ impl Display for MemtableManagerError {
             MemtableManagerError::ImmutableMemtableError(e) => {
                 write!(f, "ImmutableMemtableError: {}", e)
             }
+            MemtableManagerError::UnableToInsertEntry => write!(f, "UnableToInsertEntry"),
         }
     }
 }
@@ -38,6 +40,7 @@ impl Error for MemtableManagerError {
             MemtableManagerError::MutexLockFailed(_) => None,
             MemtableManagerError::MemtableError(e) => Some(e),
             MemtableManagerError::ImmutableMemtableError(e) => Some(e),
+            MemtableManagerError::UnableToInsertEntry => None,
         }
     }
 }
@@ -84,8 +87,8 @@ impl MemtableManager {
         }
     }
 
-    pub fn insert(&self, log_entry: LogEntry) -> Result<(), MemtableManagerError> {
-        let inserted = self.active_memtable.lock()?.insert(log_entry)?;
+    pub fn insert(&self, log_entry: Arc<LogEntry>) -> Result<(), MemtableManagerError> {
+        let inserted = self.active_memtable.lock()?.insert(log_entry.clone())?;
         if inserted {
             return Ok(());
         }
@@ -94,6 +97,11 @@ impl MemtableManager {
         // immutable memtable and a new active memtable created.
         self.create_new_active_memtable()?;
 
+        let inserted = self.active_memtable.lock()?.insert(log_entry)?;
+        if inserted {
+            return Ok(());
+        }
+
         Ok(())
     }
 
@@ -101,14 +109,14 @@ impl MemtableManager {
         &self,
         key: &Vec<u8>,
         log_seq_num: u64,
-    ) -> Result<Option<LogEntry>, MemtableManagerError> {
+    ) -> Result<Option<Arc<LogEntry>>, MemtableManagerError> {
         let val = self.active_memtable.lock()?.get(key, log_seq_num)?;
         if val.is_some() {
             return Ok(val);
         }
 
         let immutable_memtables = self.immutable_memtables.lock()?.clone();
-        for memtable in immutable_memtables {
+        for memtable in immutable_memtables.iter().rev() {
             let val = memtable.get(key, log_seq_num);
             if val.is_some() {
                 return Ok(val);
@@ -178,7 +186,6 @@ impl From<MemoryRecordError> for MemtableError {
 
 pub struct Memtable {
     skip_list: Mutex<SkipList>,
-    memory: Arc<MemoryManager>,
     db_context: Arc<DBContext>,
 
     memory_record: MemoryRecord,
@@ -197,13 +204,12 @@ impl Memtable {
                 db_context.config().memtable_expected_num_keys(),
                 db_context.config().memtable_allowed_max_levels(),
             )),
-            memory,
             db_context,
             memory_record: record,
         }
     }
 
-    pub fn insert(&self, log_entry: LogEntry) -> Result<bool, MemtableError> {
+    pub fn insert(&self, log_entry: Arc<LogEntry>) -> Result<bool, MemtableError> {
         let allocated = self.memory_record.allocate(log_entry.size())?;
         if allocated {
             let guard = self.skip_list.lock()?;
@@ -214,7 +220,11 @@ impl Memtable {
         }
     }
 
-    pub fn get(&self, key: &Vec<u8>, log_seq_num: u64) -> Result<Option<LogEntry>, MemtableError> {
+    pub fn get(
+        &self,
+        key: &Vec<u8>,
+        log_seq_num: u64,
+    ) -> Result<Option<Arc<LogEntry>>, MemtableError> {
         let guard = self.skip_list.lock()?;
         Ok(guard.get(key, log_seq_num))
     }
@@ -252,6 +262,8 @@ impl<T> From<std::sync::PoisonError<T>> for ImmutableMemtableError {
 pub struct ImmutableMemtable {
     skip_list: SkipList,
     db_context: Arc<DBContext>,
+
+    memory_record: MemoryRecord,
 }
 
 impl ImmutableMemtable {
@@ -260,13 +272,15 @@ impl ImmutableMemtable {
         memtable: Memtable,
     ) -> Result<ImmutableMemtable, ImmutableMemtableError> {
         let skip_list = memtable.skip_list.into_inner()?;
+        let memory_record = memtable.memory_record;
         Ok(ImmutableMemtable {
             db_context,
             skip_list,
+            memory_record,
         })
     }
 
-    pub fn get(&self, key: &Vec<u8>, log_seq_num: u64) -> Option<LogEntry> {
+    pub fn get(&self, key: &Vec<u8>, log_seq_num: u64) -> Option<Arc<LogEntry>> {
         self.skip_list.get(key, log_seq_num)
     }
 }

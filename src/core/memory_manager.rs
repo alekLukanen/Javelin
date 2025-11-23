@@ -34,12 +34,14 @@ impl MemoryManager {
 #[derive(Debug)]
 pub enum MemoryPoolError {
     MutexLockFailed(String),
+    DeallocationUnderflow,
 }
 
 impl Display for MemoryPoolError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MemoryPoolError::MutexLockFailed(e) => write!(f, "MutexLockFailed: {}", e),
+            MemoryPoolError::DeallocationUnderflow => write!(f, "DeallocationUnderflow"),
         }
     }
 }
@@ -48,6 +50,7 @@ impl Error for MemoryPoolError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             MemoryPoolError::MutexLockFailed(_) => None,
+            MemoryPoolError::DeallocationUnderflow => None,
         }
     }
 }
@@ -83,14 +86,20 @@ impl MemoryPool {
     }
 
     pub fn allocate(&self, amount: usize) -> Result<bool, MemoryPoolError> {
+        self.db_context.log_info(format!(
+            "[allocate] usage: {}, amount: {}",
+            self.usage.load(atomic::Ordering::SeqCst),
+            amount
+        ));
         loop {
-            let current = self.usage.load(atomic::Ordering::Relaxed);
+            let current = self.usage.load(atomic::Ordering::SeqCst);
             if current + amount <= self.max_usage {
                 let old = self.usage.fetch_add(amount, atomic::Ordering::Relaxed);
                 if old + amount <= self.max_usage {
                     return Ok(true);
                 }
-                self.usage.fetch_sub(amount, atomic::Ordering::Relaxed);
+                self.db_context.log_info("subtracing".to_string());
+                self.usage.fetch_sub(amount, atomic::Ordering::SeqCst);
             }
 
             let condvar = Arc::new(Condvar::new());
@@ -119,19 +128,28 @@ impl MemoryPool {
     }
 
     pub fn deallocate(&self, amount: usize) -> Result<(), MemoryPoolError> {
-        self.usage.fetch_sub(amount, atomic::Ordering::Relaxed);
+        self.db_context.log_info(format!(
+            "[deallocate] usage: {}, amount: {}",
+            self.usage.load(atomic::Ordering::SeqCst),
+            amount
+        ));
+
+        let current = self.usage.load(atomic::Ordering::SeqCst);
+        if current < amount {
+            return Err(MemoryPoolError::DeallocationUnderflow);
+        }
+        self.usage.fetch_sub(amount, atomic::Ordering::SeqCst);
 
         let mut queue = self.waiters.lock()?;
-
         while let Some(waiter) = queue.front_mut() {
-            let current = self.usage.load(atomic::Ordering::Relaxed);
+            let current = self.usage.load(atomic::Ordering::SeqCst);
 
             if current + waiter.amount > self.max_usage {
                 break;
             }
 
             self.usage
-                .fetch_add(waiter.amount, atomic::Ordering::Relaxed);
+                .fetch_add(waiter.amount, atomic::Ordering::SeqCst);
 
             waiter.woken = true;
             waiter.condvar.notify_one();
@@ -201,22 +219,24 @@ impl MemoryRecord {
     }
 
     pub fn allocate(&self, amount: usize) -> Result<bool, MemoryRecordError> {
-        let old = self.usage.fetch_add(amount, atomic::Ordering::Relaxed);
-        if old + amount > self.max_usage && !(old == 0 && self.allow_first_allocation) {
+        let current = self.usage.load(atomic::Ordering::SeqCst);
+        if current + amount > self.max_usage && !(current == 0 && self.allow_first_allocation) {
             return Ok(false);
         }
+
+        self.usage.fetch_add(amount, atomic::Ordering::SeqCst);
         let allocated = self.primary_manager.allocate(amount)?;
         Ok(allocated)
     }
 
     pub fn deallocate(&self, amount: usize) -> Result<(), MemoryRecordError> {
-        self.usage.fetch_sub(amount, atomic::Ordering::Relaxed);
+        self.usage.fetch_sub(amount, atomic::Ordering::SeqCst);
         self.primary_manager.deallocate(amount)?;
         Ok(())
     }
 
     pub fn release(&mut self) -> Result<(), MemoryRecordError> {
-        let amount = self.usage.load(atomic::Ordering::Relaxed);
+        let amount = self.usage.load(atomic::Ordering::SeqCst);
         self.primary_manager.deallocate(amount)?;
         Ok(())
     }
