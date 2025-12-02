@@ -283,4 +283,8 @@ impl ImmutableMemtable {
     pub fn get(&self, key: &Vec<u8>, log_seq_num: u64) -> Option<Arc<LogEntry>> {
         self.skip_list.get(key, log_seq_num)
     }
+
+    pub fn size(&self) -> usize {
+        self.memory_record.size()
+    }
 }

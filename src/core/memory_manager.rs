@@ -240,6 +240,10 @@ impl MemoryRecord {
         self.primary_manager.deallocate(amount)?;
         Ok(())
     }
+
+    pub fn size(&self) -> usize {
+        self.usage.load(atomic::Ordering::SeqCst)
+    }
 }
 
 impl Drop for MemoryRecord {
