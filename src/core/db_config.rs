@@ -7,6 +7,8 @@ pub struct DBConfig {
     memory_manager_max_memory_usage: usize,
     memory_manager_max_memtable_memory_usage: usize,
 
+    block_cache_num_shards: usize,
+
     logging_enabled: bool,
 }
 
@@ -31,6 +33,10 @@ impl DBConfig {
         self.memory_manager_max_memtable_memory_usage.clone()
     }
 
+    pub fn block_cache_num_shards(&self) -> usize {
+        self.block_cache_num_shards.clone()
+    }
+
     pub fn logging_enabled(&self) -> bool {
         self.logging_enabled
     }
@@ -49,6 +55,7 @@ impl DBConfigBuilder {
                 memtable_allowed_max_levels: 32,
                 memory_manager_max_memory_usage: 100 * (1 << 20),
                 memory_manager_max_memtable_memory_usage: 10 * (1 << 20),
+                block_cache_num_shards: 3,
                 logging_enabled: false,
             },
         }
@@ -85,6 +92,11 @@ impl DBConfigBuilder {
 
     pub fn memory_manager_max_memtable_memory_usage(mut self, val: usize) -> DBConfigBuilder {
         self.config.memory_manager_max_memtable_memory_usage = val;
+        self
+    }
+
+    pub fn block_cache_num_shards(mut self, val: usize) -> DBConfigBuilder {
+        self.config.block_cache_num_shards = val;
         self
     }
 
