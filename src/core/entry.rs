@@ -40,4 +40,36 @@ impl Entry {
             Self::Empty => 0,
         }
     }
+
+    pub fn key_size(&self) -> usize {
+        match self {
+            Self::Put { key, .. } => key.len(),
+            Self::Del { key } => key.len(),
+            Self::Empty => 0,
+        }
+    }
+
+    pub fn key(&self) -> Vec<u8> {
+        match self {
+            Self::Put { key, .. } => key.clone(),
+            Self::Del { key } => key.clone(),
+            Self::Empty => Vec::new(),
+        }
+    }
+
+    pub fn value(&self) -> Vec<u8> {
+        match self {
+            Self::Put { val, .. } => val.clone(),
+            Self::Del { .. } => Vec::new(),
+            Self::Empty => Vec::new(),
+        }
+    }
+
+    pub fn id(&self) -> u8 {
+        match self {
+            Self::Put { .. } => 1,
+            Self::Del { .. } => 0,
+            Self::Empty { .. } => 128,
+        }
+    }
 }

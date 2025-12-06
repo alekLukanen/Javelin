@@ -14,36 +14,6 @@ use super::{
     memtable::ImmutableMemtable,
 };
 
-#[derive(Debug)]
-pub enum FileManagerError {
-    UnableToAllocateMemory,
-    MemoryRecordError(MemoryRecordError),
-}
-
-impl Display for FileManagerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FileManagerError::UnableToAllocateMemory => write!(f, "UnableToAllocateMemory"),
-            FileManagerError::MemoryRecordError(e) => write!(f, "MemoryRecordError: {}", e),
-        }
-    }
-}
-
-impl Error for FileManagerError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            FileManagerError::UnableToAllocateMemory => None,
-            FileManagerError::MemoryRecordError(e) => Some(e),
-        }
-    }
-}
-
-impl From<MemoryRecordError> for FileManagerError {
-    fn from(value: MemoryRecordError) -> Self {
-        FileManagerError::MemoryRecordError(value)
-    }
-}
-
 /////////////////////////////////////////////////////
 
 pub struct FileFilterBlock {}
@@ -62,43 +32,6 @@ pub struct FileBlockData {
     data: Option<Vec<u8>>,
 
     record: MemoryRecord,
-}
-
-pub struct FileManager {
-    memory_manager: Arc<MemoryManager>,
-    db_context: Arc<DBContext>,
-}
-
-impl FileManager {
-    pub fn new(db_context: Arc<DBContext>, memory_manager: Arc<MemoryManager>) -> FileManager {
-        FileManager {
-            memory_manager,
-            db_context,
-        }
-    }
-
-    fn new_pre_allocated_record(&self, size: usize) -> Result<MemoryRecord, FileManagerError> {
-        let rec = self.memory_manager.new_record(size, true);
-        if rec.allocate(size)? {
-            Ok(rec)
-        } else {
-            Err(FileManagerError::UnableToAllocateMemory)
-        }
-    }
-
-    pub fn new_lvl0_sstable_file(
-        &self,
-        memtable: ImmutableMemtable,
-    ) -> Result<Arc<FileData>, FileManagerError> {
-        // create the file data blocks
-        //
-
-        Ok(Arc::new(FileData {
-            id: 0,
-            filter: FileFilterBlock {},
-            index: FileIndexBlock {},
-        }))
-    }
 }
 
 ///////////////////////////////////////////////////
@@ -183,7 +116,6 @@ impl BlockCache {
         let inner = Arc::new(BlockCacheInner {
             memory_manager: memory_manager.clone(),
             db_context: db_context.clone(),
-            file_manager: Arc::new(FileManager::new(db_context, memory_manager)),
             shards: Vec::new(),
             num_shards,
             maintain_idx: AtomicUsize::new(0),
@@ -222,13 +154,33 @@ impl BlockCache {
             .get_data_block(file_id, block_id);
         Ok(handle)
     }
+
+    fn new_pre_allocated_record(&self, size: usize) -> Result<MemoryRecord, BlockCacheError> {
+        let rec = self.inner.memory_manager.new_record(size, true);
+        if rec.allocate(size)? {
+            Ok(rec)
+        } else {
+            Err(BlockCacheError::UnableToAllocateMemory)
+        }
+    }
+
+    pub fn new_lvl0_sstable_file(
+        &self,
+        memtable: ImmutableMemtable,
+    ) -> Result<Arc<FileData>, BlockCacheError> {
+        // create the file data blocks
+
+        Ok(Arc::new(FileData {
+            id: 0,
+            filter: FileFilterBlock {},
+            index: FileIndexBlock {},
+        }))
+    }
 }
 
 pub struct BlockCacheInner {
     memory_manager: Arc<MemoryManager>,
     db_context: Arc<DBContext>,
-
-    file_manager: Arc<FileManager>,
 
     shards: Vec<Mutex<BlockCacheShard>>,
     num_shards: usize,
@@ -264,13 +216,17 @@ impl BlockCacheInner {
 
 #[derive(Debug)]
 pub enum BlockCacheError {
+    UnableToAllocateMemory,
     MutexLockFailed(String),
+    MemoryRecordError(MemoryRecordError),
 }
 
 impl Display for BlockCacheError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            BlockCacheError::UnableToAllocateMemory => write!(f, "UnableToAllocateMemory"),
             BlockCacheError::MutexLockFailed(e) => write!(f, "MutexLockFailed: {}", e),
+            BlockCacheError::MemoryRecordError(e) => write!(f, "MemoryRecordError: {}", e),
         }
     }
 }
@@ -278,7 +234,9 @@ impl Display for BlockCacheError {
 impl Error for BlockCacheError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            BlockCacheError::UnableToAllocateMemory => None,
             BlockCacheError::MutexLockFailed(_) => None,
+            BlockCacheError::MemoryRecordError(e) => Some(e),
         }
     }
 }
@@ -286,5 +244,11 @@ impl Error for BlockCacheError {
 impl<T> From<std::sync::PoisonError<std::sync::MutexGuard<'_, T>>> for BlockCacheError {
     fn from(value: std::sync::PoisonError<std::sync::MutexGuard<'_, T>>) -> Self {
         BlockCacheError::MutexLockFailed(value.to_string())
+    }
+}
+
+impl From<MemoryRecordError> for BlockCacheError {
+    fn from(value: MemoryRecordError) -> Self {
+        BlockCacheError::MemoryRecordError(value)
     }
 }

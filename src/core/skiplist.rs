@@ -179,6 +179,13 @@ impl SkipList {
 
         None
     }
+
+    pub fn iter(&self) -> SkipListIter {
+        // First real node = head.levels[0]
+        let first = self.head.borrow().levels.get(0).cloned().flatten();
+
+        SkipListIter { current: first }
+    }
 }
 
 // Helper to avoid rand crate
@@ -212,5 +219,32 @@ impl Display for SkipList {
         }
 
         write!(f, "{}", res)
+    }
+}
+
+/////////////////////////////////////////////////////
+
+pub struct SkipListIter {
+    current: Option<Rc<RefCell<Node>>>,
+}
+
+impl Iterator for SkipListIter {
+    type Item = Arc<LogEntry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Move to next node
+        let curr_rc = self.current.take()?;
+        let curr = curr_rc.borrow();
+
+        // Extract current log_entry unless it's the head's dummy entry
+        let entry = match &curr.log_entry.entry {
+            Entry::Empty => None,
+            _ => Some(curr.log_entry.clone()),
+        };
+
+        // Advance to next (level 0 always exists)
+        self.current = curr.levels.get(0).cloned().flatten();
+
+        entry
     }
 }

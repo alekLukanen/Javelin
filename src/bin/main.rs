@@ -9,9 +9,20 @@ use Javelin::core::{
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // try_skiplist()?;
 
-    try_db()?;
+    // try_db()?;
+
+    try_data_formatting();
 
     Ok(())
+}
+
+fn try_data_formatting() {
+    let val1: u32 = 256;
+    let val1_data_be = val1.to_be_bytes();
+    let val1_data_le = val1.to_le_bytes();
+
+    println!("val1_data_be: {:?}", val1_data_be);
+    println!("val1_data_le: {:?}", val1_data_le);
 }
 
 fn try_db() -> Result<(), Box<dyn std::error::Error>> {

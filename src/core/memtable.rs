@@ -8,7 +8,7 @@ use super::{
     db_context::DBContext,
     entry::LogEntry,
     memory_manager::{MemoryManager, MemoryRecord, MemoryRecordError},
-    skiplist::SkipList,
+    skiplist::{SkipList, SkipListIter},
 };
 
 ///////////////////////////////////////
@@ -286,5 +286,9 @@ impl ImmutableMemtable {
 
     pub fn size(&self) -> usize {
         self.memory_record.size()
+    }
+
+    pub fn iter(&self) -> SkipListIter {
+        self.skip_list.iter()
     }
 }

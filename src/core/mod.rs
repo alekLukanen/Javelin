@@ -6,6 +6,7 @@ pub mod entry;
 pub mod memory_manager;
 pub mod memtable;
 pub mod skiplist;
+pub mod sstable_builder;
 pub mod wal;
 
 #[cfg(test)]
