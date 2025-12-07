@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use super::{db_config, db_context, entry, memory_manager, memtable};
+use crate::core::test_utils::TestContext;
+
+use super::{db_config, entry, memtable};
 
 #[test]
 fn test_memtable_immutible_tables() -> Result<(), Box<dyn std::error::Error>> {
@@ -8,10 +10,10 @@ fn test_memtable_immutible_tables() -> Result<(), Box<dyn std::error::Error>> {
         .memory_manager_max_memory_usage(10000)
         .memory_manager_max_memtable_memory_usage(100)
         .build();
-    let db_context = Arc::new(db_context::DBContext::new(db_config));
-    let memory_manager = Arc::new(memory_manager::MemoryManager::new(db_context.clone()));
+    let test_context = TestContext::new_from_config(db_config);
 
-    let table = memtable::MemtableManager::new(db_context, memory_manager);
+    let table =
+        memtable::MemtableManager::new(test_context.db_context, test_context.memory_manager);
 
     let mut expected_keys: Vec<Vec<u8>> = Vec::new();
 

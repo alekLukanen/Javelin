@@ -29,51 +29,84 @@ pub enum Block {
 }
 
 pub struct PrefixCompressedEntry {
-    shared_len: usize,
-    unshared_len: usize,
-    value_len: usize,
+    shared_len: u32,
+    unshared_len: u32,
+    value_len: u32,
     key_suffix: Vec<u8>,
     value: Vec<u8>,
+}
+
+impl PrefixCompressedEntry {
+    fn size(&self) -> u32 {
+        self.shared_len + self.unshared_len + self.value_len
+    }
 }
 
 pub struct SSTableBuilder {
     immutable_memtable: Option<SkipListIter>,
     restart_segment_size: usize,
+    max_block_size: usize,
 }
 
 impl SSTableBuilder {
-    pub fn build_from_immutable_memtable(memtable: ImmutableMemtable) -> SSTableBuilder {
+    pub fn build_from_immutable_memtable(
+        memtable: ImmutableMemtable,
+        max_block_size: usize,
+    ) -> SSTableBuilder {
         SSTableBuilder {
             immutable_memtable: Some(memtable.iter()),
             restart_segment_size: 4,
+            max_block_size,
         }
     }
 
     fn next_memtable_block(&mut self) -> Option<Block> {
-        let compressed_entries: Vec<PrefixCompressedEntry> = Vec::new();
-
-        let next_entry = self.immutable_memtable.expect("expected memtable").next();
-        match next_entry {
-            Some(entry) => {
-                compressed_entries.push(Self::compressed_entry_from_log_entry(&entry, &vec![]))
-            }
+        let iter = match &mut self.immutable_memtable {
+            Some(iter) => iter,
             None => return None,
-        }
+        };
 
-        let restart_idx: usize = 0;
-        for entry in self.immutable_memtable.expect("expected memtable") {
-            if restart_idx % self.restart_segment_size {
-                compressed_entries.push(Self::compressed_entry_from_log_entry(&entry, &vec![]));
+        let mut compressed_entries: Vec<PrefixCompressedEntry> = Vec::new();
+
+        let mut restart_offsets: Vec<u32> = Vec::new();
+        let mut restart_offset = 0;
+        let mut restart_idx: u32 = 0;
+
+        let mut prev_key: Option<Vec<u8>> = None;
+        let mut block_size = 0;
+
+        for entry in iter {
+            if restart_idx % self.restart_segment_size as u32 == 0 {
+                let next_compressed_entry = Self::compressed_entry_from_log_entry(&entry, &vec![]);
+
+                // update state
+                restart_offsets.push(restart_offset);
+                restart_offset += next_compressed_entry.size();
+                block_size += next_compressed_entry.size();
+                prev_key = Some(entry.entry.key());
             } else {
-                let compressed_entry = compressed_entries.last();
-                match prev_key {
-                    Some(prev_entry)
-                }
+                // get the previous key
+                let prev_key = match &prev_key {
+                    Some(prev_key) => prev_key,
+                    None => panic!("previous key not found"),
+                };
+                let next_compressed_entry = Self::compressed_entry_from_log_entry(&entry, prev_key);
+
+                // update state
+                restart_offset += next_compressed_entry.size();
+                block_size += next_compressed_entry.size();
+                compressed_entries.push(next_compressed_entry);
             }
+
+            // break when the block size is large enough
+            if block_size as usize > self.max_block_size {
+                break;
+            }
+            restart_idx += 1;
         }
         Some(Block::DataBlock {
             keys: compressed_entries,
-            restarts: (),
+            restarts: restart_offsets,
         })
     }
 
@@ -85,14 +118,38 @@ impl SSTableBuilder {
         let key = entry.entry.key();
         let value = entry.entry.value();
         let id = entry.entry.id();
+        let mut trailer = entry.log_seq_num.to_le_bytes().to_vec();
+        trailer.push(id.to_le());
+
+        let shared_len = shared_prefix_len(&key, previous_key);
+        let suffix = compute_suffix(&key, shared_len, &trailer);
+
         PrefixCompressedEntry {
-            shared_len: 0,
-            unshared_len: key.len(),
-            value_len: value.len(),
-            key_suffix: Vec::new(),
-            value: Vec::new(),
+            shared_len: shared_len as u32,
+            unshared_len: key.len() as u32,
+            value_len: value.len() as u32,
+            key_suffix: suffix,
+            value,
         }
     }
+}
+
+#[inline]
+fn shared_prefix_len(a: &[u8], b: &[u8]) -> usize {
+    let mut i = 0;
+    let min_len = a.len().min(b.len());
+    while i < min_len && a[i] == b[i] {
+        i += 1;
+    }
+    i
+}
+
+#[inline]
+fn compute_suffix(next: &[u8], shared: usize, trailer: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(next.len() - shared + trailer.len());
+    out.extend_from_slice(&next[shared..]);
+    out.extend_from_slice(trailer);
+    out
 }
 
 impl Iterator for SSTableBuilder {

@@ -74,13 +74,7 @@ pub struct MemtableManager {
 impl MemtableManager {
     pub fn new(db_context: Arc<DBContext>, memory: Arc<MemoryManager>) -> MemtableManager {
         MemtableManager {
-            active_memtable: Mutex::new(Memtable::new(
-                db_context.clone(),
-                memory.clone(),
-                db_context
-                    .config()
-                    .memory_manager_max_memtable_memory_usage(),
-            )),
+            active_memtable: Mutex::new(Memtable::new(db_context.clone(), memory.clone())),
             immutable_memtables: Mutex::new(Vec::new()),
             memory,
             db_context,
@@ -130,13 +124,7 @@ impl MemtableManager {
         let mut active_memtable_guard = self.active_memtable.lock()?;
         let old = std::mem::replace(
             &mut *active_memtable_guard,
-            Memtable::new(
-                self.db_context.clone(),
-                self.memory.clone(),
-                self.db_context
-                    .config()
-                    .memory_manager_max_memtable_memory_usage(),
-            ),
+            Memtable::new(self.db_context.clone(), self.memory.clone()),
         );
 
         let immutable_memtable = Arc::new(ImmutableMemtable::new(self.db_context.clone(), old)?);
@@ -186,25 +174,24 @@ impl From<MemoryRecordError> for MemtableError {
 
 pub struct Memtable {
     skip_list: Mutex<SkipList>,
-    db_context: Arc<DBContext>,
 
     memory_record: MemoryRecord,
 }
 
 impl Memtable {
-    pub fn new(
-        db_context: Arc<DBContext>,
-        memory: Arc<MemoryManager>,
-        max_size: usize,
-    ) -> Memtable {
-        let record = memory.new_record(max_size, true);
+    pub fn new(db_context: Arc<DBContext>, memory: Arc<MemoryManager>) -> Memtable {
+        let record = memory.new_record(
+            db_context
+                .config()
+                .memory_manager_max_memtable_memory_usage(),
+            true,
+        );
         Memtable {
             skip_list: Mutex::new(SkipList::new(
                 db_context.config().memtable_probability(),
                 db_context.config().memtable_expected_num_keys(),
                 db_context.config().memtable_allowed_max_levels(),
             )),
-            db_context,
             memory_record: record,
         }
     }
