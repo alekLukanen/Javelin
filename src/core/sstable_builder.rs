@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use super::{
+    db_context::DBContext,
     entry::{self, LogEntry},
     memtable::ImmutableMemtable,
     skiplist::SkipListIter,
@@ -28,12 +29,13 @@ pub enum Block {
     },
 }
 
+#[derive(Debug)]
 pub struct PrefixCompressedEntry {
-    shared_len: u32,
-    unshared_len: u32,
-    value_len: u32,
-    key_suffix: Vec<u8>,
-    value: Vec<u8>,
+    pub(crate) shared_len: u32,
+    pub(crate) unshared_len: u32,
+    pub(crate) value_len: u32,
+    pub(crate) key_suffix: Vec<u8>,
+    pub(crate) value: Vec<u8>,
 }
 
 impl PrefixCompressedEntry {
@@ -43,6 +45,8 @@ impl PrefixCompressedEntry {
 }
 
 pub struct SSTableBuilder {
+    db_context: Arc<DBContext>,
+
     immutable_memtable: Option<SkipListIter>,
     restart_segment_size: usize,
     max_block_size: usize,
@@ -50,12 +54,14 @@ pub struct SSTableBuilder {
 
 impl SSTableBuilder {
     pub fn build_from_immutable_memtable(
+        db_context: Arc<DBContext>,
         memtable: ImmutableMemtable,
         max_block_size: usize,
     ) -> SSTableBuilder {
         SSTableBuilder {
+            db_context,
             immutable_memtable: Some(memtable.iter()),
-            restart_segment_size: 4,
+            restart_segment_size: 8,
             max_block_size,
         }
     }
@@ -79,11 +85,17 @@ impl SSTableBuilder {
             if restart_idx % self.restart_segment_size as u32 == 0 {
                 let next_compressed_entry = Self::compressed_entry_from_log_entry(&entry, &vec![]);
 
+                self.db_context.log_info(format!(
+                    "[SSTable Builder] entry: {:?}",
+                    next_compressed_entry
+                ));
+
                 // update state
                 restart_offsets.push(restart_offset);
                 restart_offset += next_compressed_entry.size();
                 block_size += next_compressed_entry.size();
                 prev_key = Some(entry.entry.key());
+                compressed_entries.push(next_compressed_entry);
             } else {
                 // get the previous key
                 let prev_key = match &prev_key {
@@ -104,10 +116,16 @@ impl SSTableBuilder {
             }
             restart_idx += 1;
         }
-        Some(Block::DataBlock {
-            keys: compressed_entries,
-            restarts: restart_offsets,
-        })
+        if block_size != 0 {
+            self.db_context
+                .log_info(format!("[SSTable Builder] block size: {}", block_size));
+            Some(Block::DataBlock {
+                keys: compressed_entries,
+                restarts: restart_offsets,
+            })
+        } else {
+            None
+        }
     }
 
     #[inline]
@@ -126,7 +144,7 @@ impl SSTableBuilder {
 
         PrefixCompressedEntry {
             shared_len: shared_len as u32,
-            unshared_len: key.len() as u32,
+            unshared_len: (key.len() - shared_len) as u32,
             value_len: value.len() as u32,
             key_suffix: suffix,
             value,
