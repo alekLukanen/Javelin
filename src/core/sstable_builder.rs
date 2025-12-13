@@ -1,24 +1,46 @@
 use std::sync::Arc;
 
 use super::{
-    db_context::DBContext,
-    entry::{self, LogEntry},
-    memtable::ImmutableMemtable,
-    skiplist::SkipListIter,
+    db_context::DBContext, entry::LogEntry, memtable::ImmutableMemtable, skiplist::SkipListIter,
 };
+
+pub enum Compression {
+    None,
+}
+
+impl Compression {
+    pub fn value(&self) -> u8 {
+        match self {
+            Self::None => 0,
+        }
+    }
+}
 
 pub struct BlockHandle {
     offset: u64,
     size: u64,
 }
 
+impl BlockHandle {
+    pub fn size(&self) -> usize {
+        8 + 8
+    }
+    pub fn value(&self) -> Vec<u8> {
+        let mut val = self.offset.to_le_bytes().to_vec();
+        val.extend_from_slice(&self.size.to_le_bytes());
+        val
+    }
+}
+
 pub enum Block {
     DataBlock {
         keys: Vec<PrefixCompressedEntry>,
+        keys_len: u64,
         restarts: Vec<u32>,
     },
     IndexBlock {
         keys: Vec<PrefixCompressedEntry>,
+        keys_len: u64,
         restarts: Vec<u32>,
     },
     FooterBlock {
@@ -27,6 +49,24 @@ pub enum Block {
         index_block_handle: BlockHandle,
         padding: u8,
     },
+}
+
+impl Block {
+    pub fn disk_size(&self) -> usize {
+        match self {
+            Self::DataBlock {
+                keys_len, restarts, ..
+            } => *keys_len as usize + 8 + restarts.len() + 1 + 4,
+            Self::IndexBlock {
+                keys_len, restarts, ..
+            } => *keys_len as usize + 8 + restarts.len() + 1 + 4,
+            Self::FooterBlock {
+                data_block_handle,
+                index_block_handle,
+                ..
+            } => 8 + data_block_handle.size() + index_block_handle.size() + 1 + 4,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -39,13 +79,16 @@ pub struct PrefixCompressedEntry {
 }
 
 impl PrefixCompressedEntry {
-    fn size(&self) -> u32 {
-        self.shared_len + self.unshared_len + self.value_len
+    pub fn size(&self) -> usize {
+        // the 9 is from the entry type + sequence number
+        4 + 4 + 4 + self.unshared_len as usize + 9 + self.value_len as usize
     }
 }
 
 pub struct SSTableBuilder {
     db_context: Arc<DBContext>,
+
+    returned_index_block: bool,
 
     immutable_memtable: Option<SkipListIter>,
     restart_segment_size: usize,
@@ -60,6 +103,7 @@ impl SSTableBuilder {
     ) -> SSTableBuilder {
         SSTableBuilder {
             db_context,
+            returned_index_block: false,
             immutable_memtable: Some(memtable.iter()),
             restart_segment_size: 8,
             max_block_size,
@@ -73,6 +117,7 @@ impl SSTableBuilder {
         };
 
         let mut compressed_entries: Vec<PrefixCompressedEntry> = Vec::new();
+        let mut smallest_entry: Option<Arc<LogEntry>> = None;
 
         let mut restart_offsets: Vec<u32> = Vec::new();
         let mut restart_offset = 0;
@@ -83,16 +128,14 @@ impl SSTableBuilder {
 
         for entry in iter {
             if restart_idx % self.restart_segment_size as u32 == 0 {
+                if smallest_entry.is_none() {
+                    smallest_entry = Some(entry.clone());
+                }
                 let next_compressed_entry = Self::compressed_entry_from_log_entry(&entry, &vec![]);
-
-                self.db_context.log_info(format!(
-                    "[SSTable Builder] entry: {:?}",
-                    next_compressed_entry
-                ));
 
                 // update state
                 restart_offsets.push(restart_offset);
-                restart_offset += next_compressed_entry.size();
+                restart_offset += next_compressed_entry.size() as u32;
                 block_size += next_compressed_entry.size();
                 prev_key = Some(entry.entry.key());
                 compressed_entries.push(next_compressed_entry);
@@ -105,7 +148,7 @@ impl SSTableBuilder {
                 let next_compressed_entry = Self::compressed_entry_from_log_entry(&entry, prev_key);
 
                 // update state
-                restart_offset += next_compressed_entry.size();
+                restart_offset += next_compressed_entry.size() as u32;
                 block_size += next_compressed_entry.size();
                 compressed_entries.push(next_compressed_entry);
             }
@@ -117,14 +160,93 @@ impl SSTableBuilder {
             restart_idx += 1;
         }
         if block_size != 0 {
-            self.db_context
-                .log_info(format!("[SSTable Builder] block size: {}", block_size));
-            Some(Block::DataBlock {
+            let keys_len: u64 = compressed_entries
+                .iter()
+                .map(|item| item.size())
+                .sum::<usize>() as u64;
+            let data_block = Block::DataBlock {
                 keys: compressed_entries,
+                keys_len,
                 restarts: restart_offsets,
-            })
+            };
+            Some(data_block)
         } else {
             None
+        }
+    }
+
+    pub fn index_block(&self, index_block_entries: &Vec<(Arc<LogEntry>, usize)>) -> Block {
+        let mut compressed_entries: Vec<PrefixCompressedEntry> = Vec::new();
+
+        let mut restart_offsets: Vec<u32> = Vec::new();
+        let mut restart_offset = 0;
+        let mut restart_idx: u32 = 0;
+
+        let mut prev_key: Option<Vec<u8>> = None;
+        let mut block_size = 0;
+
+        let mut block_offset: usize = 0;
+
+        for (entry, data_block_size) in index_block_entries {
+            let block_handle = BlockHandle {
+                offset: block_offset as u64,
+                size: *data_block_size as u64,
+            };
+            block_offset += *data_block_size;
+            if restart_idx % self.restart_segment_size as u32 == 0 {
+                let next_compressed_entry =
+                    Self::compressed_entry_from_index_item(&entry, block_handle, &vec![]);
+
+                // update state
+                restart_offsets.push(restart_offset);
+                restart_offset += next_compressed_entry.size() as u32;
+                block_size += next_compressed_entry.size();
+                prev_key = Some(entry.entry.key());
+                compressed_entries.push(next_compressed_entry);
+            } else {
+                // get the previous key
+                let prev_key = match &prev_key {
+                    Some(prev_key) => prev_key,
+                    None => panic!("previous key not found"),
+                };
+                let next_compressed_entry =
+                    Self::compressed_entry_from_index_item(&entry, block_handle, prev_key);
+
+                // update state
+                restart_offset += next_compressed_entry.size() as u32;
+                block_size += next_compressed_entry.size();
+                compressed_entries.push(next_compressed_entry);
+            }
+
+            // break when the block size is large enough
+            if block_size as usize > self.max_block_size {
+                break;
+            }
+            restart_idx += 1;
+        }
+        let keys_len: u64 = compressed_entries
+            .iter()
+            .map(|item| item.size())
+            .sum::<usize>() as u64;
+        Block::IndexBlock {
+            keys: compressed_entries,
+            keys_len,
+            restarts: restart_offsets,
+        }
+    }
+
+    pub fn footer(&self, data_size: usize, index_size: usize) -> Block {
+        Block::FooterBlock {
+            magic: 69,
+            data_block_handle: BlockHandle {
+                offset: 0,
+                size: data_size as u64,
+            },
+            index_block_handle: BlockHandle {
+                offset: data_size as u64,
+                size: index_size as u64,
+            },
+            padding: 0,
         }
     }
 
@@ -141,6 +263,27 @@ impl SSTableBuilder {
 
         let shared_len = shared_prefix_len(&key, previous_key);
         let suffix = compute_suffix(&key, shared_len, &trailer);
+
+        PrefixCompressedEntry {
+            shared_len: shared_len as u32,
+            unshared_len: (key.len() - shared_len) as u32,
+            value_len: value.len() as u32,
+            key_suffix: suffix,
+            value,
+        }
+    }
+
+    #[inline]
+    fn compressed_entry_from_index_item(
+        entry: &Arc<LogEntry>,
+        handle: BlockHandle,
+        previous_key: &[u8],
+    ) -> PrefixCompressedEntry {
+        let key = entry.entry.key();
+        let value = handle.value();
+
+        let shared_len = shared_prefix_len(&key, previous_key);
+        let suffix = compute_suffix(&key, shared_len, &[]);
 
         PrefixCompressedEntry {
             shared_len: shared_len as u32,

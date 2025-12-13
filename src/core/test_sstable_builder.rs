@@ -40,10 +40,22 @@ fn test_build_from_immutable_memtable() -> Result<(), Box<dyn std::error::Error>
     assert_eq!(1, blocks.len());
 
     // validate the values
-    let (data_block_keys, data_block_restarts) = match blocks.get(0).expect("expected block") {
-        Block::DataBlock { keys, restarts } => (keys, restarts),
-        _ => panic!("expected first block to be a data block"),
-    };
+    let (data_block_keys, data_block_keys_len, data_block_restarts) =
+        match blocks.get(0).expect("expected block") {
+            Block::DataBlock {
+                keys,
+                keys_len,
+                restarts,
+            } => (keys, keys_len, restarts),
+            _ => panic!("expected first block to be a data block"),
+        };
+
+    let expected_keys_len: u64 = data_block_keys
+        .iter()
+        .map(|item| item.size())
+        .sum::<usize>() as u64;
+    assert_eq!(expected_keys_len, *data_block_keys_len);
+
     for (idx, pc_entry) in data_block_keys.iter().enumerate() {
         assert_eq!(
             key_values.get(idx).expect("expected value at index").1,
@@ -80,7 +92,6 @@ fn test_build_from_immutable_memtable() -> Result<(), Box<dyn std::error::Error>
 
     // validate the keys
     for (idx, key) in reconstructed_keys.iter().enumerate() {
-        println!("idx: {}, key: {:?}", idx, key[..key.len() - 9].to_vec());
         assert_eq!(
             key_values.get(idx).expect("expected value at index").1,
             key[0..key.len() - 9],
