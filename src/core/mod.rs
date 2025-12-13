@@ -7,6 +7,7 @@ pub mod memory_manager;
 pub mod memtable;
 pub mod skiplist;
 pub mod sstable_builder;
+pub mod sstable_writer;
 pub mod test_utils;
 pub mod wal;
 
