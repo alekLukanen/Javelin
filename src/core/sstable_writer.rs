@@ -141,7 +141,7 @@ impl SSTableWriter {
         data_block_handle: &BlockHandle,
         index_block_handle: &BlockHandle,
     ) -> Result<usize, SSTableWriterError> {
-        let size = 8 + data_block_handle.size() + index_block_handle.size();
+        let size = 8 + data_block_handle.size() + index_block_handle.size() + 4 + 1;
         let mut data: Vec<u8> = Vec::with_capacity(size);
 
         data.extend_from_slice(&magic.to_le_bytes());
