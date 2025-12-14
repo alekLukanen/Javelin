@@ -9,6 +9,8 @@ pub struct DBConfig {
 
     block_cache_num_shards: usize,
 
+    data_dir: Option<String>,
+
     logging_enabled: bool,
 }
 
@@ -37,6 +39,13 @@ impl DBConfig {
         self.block_cache_num_shards.clone()
     }
 
+    pub fn data_dir(&self) -> String {
+        match &self.data_dir {
+            Some(data_dir) => data_dir.clone(),
+            None => panic!("missing data_dir config value"),
+        }
+    }
+
     pub fn logging_enabled(&self) -> bool {
         self.logging_enabled
     }
@@ -57,6 +66,7 @@ impl DBConfigBuilder {
                 memory_manager_max_memtable_memory_usage: 10 * (1 << 20),
                 block_cache_num_shards: 3,
                 logging_enabled: false,
+                data_dir: None,
             },
         }
     }
@@ -97,6 +107,11 @@ impl DBConfigBuilder {
 
     pub fn block_cache_num_shards(mut self, val: usize) -> DBConfigBuilder {
         self.config.block_cache_num_shards = val;
+        self
+    }
+
+    pub fn data_dir(mut self, data_dir: String) -> DBConfigBuilder {
+        self.config.data_dir = Some(data_dir);
         self
     }
 

@@ -16,10 +16,6 @@ use super::{
 
 /////////////////////////////////////////////////////
 
-pub struct FileFilterBlock {}
-
-pub struct FileIndexBlock {}
-
 pub struct FileData {
     id: u64,
     filter: FileFilterBlock,
@@ -190,7 +186,7 @@ pub struct BlockCacheInner {
 impl BlockCacheInner {
     fn maintain(&self) -> Result<(), BlockCacheError> {
         loop {
-            let idx = self.maintain_idx.fetch_add(1, Ordering::Relaxed) & self.num_shards;
+            let idx = self.maintain_idx.fetch_add(1, Ordering::Relaxed) % self.num_shards;
             let mut shard = self.shards.get(idx).expect("expected shard").lock()?;
             let keys_to_delete: Vec<(u64, u16)> = shard
                 .data_blocks
