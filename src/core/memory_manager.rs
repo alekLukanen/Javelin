@@ -218,6 +218,23 @@ impl MemoryRecord {
         }
     }
 
+    pub fn duplicate(&self) -> Result<Option<MemoryRecord>, MemoryRecordError> {
+        let current = self.usage.load(atomic::Ordering::SeqCst);
+        let allocated = self.primary_manager.allocate(current)?;
+        if allocated {
+            let record = MemoryRecord {
+                primary_manager: self.primary_manager.clone(),
+                usage: atomic::AtomicUsize::new(current),
+                max_usage: self.max_usage,
+                allow_first_allocation: self.allow_first_allocation,
+                db_context: self.db_context.clone(),
+            };
+            Ok(Some(record))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn allocate(&self, amount: usize) -> Result<bool, MemoryRecordError> {
         let current = self.usage.load(atomic::Ordering::SeqCst);
         if current + amount > self.max_usage && !(current == 0 && self.allow_first_allocation) {

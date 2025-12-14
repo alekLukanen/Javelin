@@ -39,6 +39,7 @@ struct Node {
     levels: Vec<NodeLink>,
 }
 
+#[derive(Clone)]
 pub struct SkipList {
     head: Rc<RefCell<Node>>,
     probability: f64,

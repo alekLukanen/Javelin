@@ -13,7 +13,10 @@ fn test_build_from_immutable_memtable() -> Result<(), Box<dyn std::error::Error>
     let tc = TestContext::new();
 
     // create the memtable with some sample data
-    let table = memtable::Memtable::new(tc.db_context.clone(), tc.memory_manager.clone());
+    let table = Arc::new(memtable::Memtable::new(
+        tc.db_context.clone(),
+        tc.memory_manager.clone(),
+    ));
 
     let mut key_values: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     for i in 0..24 as u64 {

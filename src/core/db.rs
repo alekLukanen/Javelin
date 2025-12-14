@@ -5,7 +5,7 @@ use std::sync::Arc;
 use super::db_context::DBContext;
 use super::entry::{Entry, LogEntry};
 use super::memory_manager::MemoryManager;
-use super::memtable::{MemtableManager, MemtableManagerError};
+use super::memtable::{ImmutableMemtable, MemtableManager, MemtableManagerError};
 use super::wal::WAL;
 use crate::core::db_config::DBConfig;
 
@@ -37,6 +37,11 @@ impl From<MemtableManagerError> for DBError {
 }
 
 ////////////////////////////////////////////
+
+pub struct ReadState {
+    memtables: Vec<Arc<ImmutableMemtable>>,
+    sstable_version: SSTableVersion,
+}
 
 pub struct DB {
     memtable: MemtableManager,
