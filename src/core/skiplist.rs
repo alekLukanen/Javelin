@@ -55,7 +55,7 @@ impl SkipList {
         let head = Rc::new(RefCell::new(Node {
             log_entry: Arc::new(LogEntry {
                 entry: Entry::Empty,
-                log_seq_num: 0,
+                log_seq_num: u64::MAX,
             }),
             levels: vec![None; num_levels],
         }));
@@ -69,135 +69,144 @@ impl SkipList {
 
     fn random_level(&self) -> usize {
         let mut lvl = 1;
-        while lvl < self.num_levels && rand_bool(self.probability) {
+        while lvl < self.num_levels && fastrand::f64() < self.probability {
             lvl += 1;
         }
         lvl
     }
 
-    pub fn insert(&self, log_entry: Arc<LogEntry>) {
-        let key = match &log_entry.entry {
+    #[inline]
+    fn user_key(entry: &Entry) -> &[u8] {
+        match entry {
             Entry::Put { key, .. } => key,
             Entry::Del { key } => key,
-            Entry::Empty => return,
-        };
+            Entry::Empty => unreachable!(),
+        }
+    }
 
-        let level = self.random_level();
+    // Used only at level 0
+    #[inline]
+    fn cmp_full(a: &LogEntry, b: &LogEntry) -> Ordering {
+        match Self::user_key(&a.entry).cmp(Self::user_key(&b.entry)) {
+            Ordering::Equal => b.log_seq_num.cmp(&a.log_seq_num), // DESC
+            other => other,
+        }
+    }
 
-        // Track nodes that need to be updated at each level
-        let mut update: Vec<Rc<RefCell<Node>>> = vec![self.head.clone(); level];
-
-        let mut current = self.head.clone();
-
-        for i in (0..level).rev() {
-            loop {
-                let next_opt = current.borrow().levels[i].clone();
-                match next_opt {
-                    Some(ref next) => {
-                        let next_borrow = next.borrow(); // extend borrow
-                        let next_key = match &next_borrow.log_entry.entry {
-                            Entry::Put { key, .. } => key,
-                            Entry::Del { key } => key,
-                            Entry::Empty => break,
-                        };
-                        match next_key.as_slice().cmp(&*key) {
-                            Ordering::Less => {
-                                drop(next_borrow);
-                                current = next.clone();
-                            }
-                            Ordering::Equal => {
-                                if log_entry.log_seq_num > next_borrow.log_entry.log_seq_num {
-                                    break;
-                                } else if log_entry.log_seq_num == next_borrow.log_entry.log_seq_num
-                                {
-                                    panic!(
-                                        "trying to update a value in a previous log sequence number",
-                                    );
-                                } else {
-                                    drop(next_borrow);
-                                    current = next.clone();
-                                }
-                            }
-                            Ordering::Greater => break,
-                        }
-                    }
-                    None => break,
-                }
-            }
-            update[i] = current.clone();
+    pub fn insert(&self, log_entry: Arc<LogEntry>) {
+        if matches!(log_entry.entry, Entry::Empty) {
+            return;
         }
 
-        // Create new node
+        let mut update = vec![self.head.clone(); self.num_levels];
+        let mut current = self.head.clone();
+
+        // Traverse top-down
+        for level in (0..self.num_levels).rev() {
+            loop {
+                let next = {
+                    let cur = current.borrow();
+                    if level < cur.levels.len() {
+                        cur.levels[level].clone()
+                    } else {
+                        None
+                    }
+                };
+
+                let Some(next_rc) = next else { break };
+                let next_ref = next_rc.borrow();
+
+                let cmp = if level == 0 {
+                    Self::cmp_full(&next_ref.log_entry, &log_entry)
+                } else {
+                    Self::user_key(&next_ref.log_entry.entry).cmp(Self::user_key(&log_entry.entry))
+                };
+
+                if cmp == Ordering::Less {
+                    drop(next_ref);
+                    current = next_rc;
+                } else {
+                    break;
+                }
+            }
+            update[level] = current.clone();
+        }
+
+        let node_level = self.random_level();
         let new_node = Rc::new(RefCell::new(Node {
             log_entry,
-            levels: vec![None; level],
+            levels: vec![None; node_level],
         }));
 
-        // Insert node at each level
-        for i in 0..level {
-            let mut prev = update[i].borrow_mut();
-            new_node.borrow_mut().levels[i] = prev.levels[i].take();
-            prev.levels[i] = Some(new_node.clone());
+        // Splice
+        for level in 0..node_level {
+            let mut prev = update[level].borrow_mut();
+            let next = prev.levels[level].take();
+            new_node.borrow_mut().levels[level] = next;
+            prev.levels[level] = Some(new_node.clone());
         }
     }
 
-    pub fn get(&self, key: &Vec<u8>, log_seq_num: u64) -> Option<Arc<LogEntry>> {
+    pub fn get(&self, key: &[u8], snapshot_seq: u64) -> Option<Arc<LogEntry>> {
         let mut current = self.head.clone();
 
-        for i in (0..self.num_levels).rev() {
+        // Only user-key traversal above level 0
+        for level in (1..self.num_levels).rev() {
             loop {
-                let next_opt = current.borrow().levels[i].clone();
-                let next = match next_opt {
-                    Some(n) => n,
-                    None => break,
+                let next = {
+                    let cur = current.borrow();
+                    if level < cur.levels.len() {
+                        cur.levels[level].clone()
+                    } else {
+                        None
+                    }
                 };
 
-                // Keep the borrow alive in a variable
-                let next_borrow = next.borrow();
+                let Some(next_rc) = next else { break };
+                let next_ref = next_rc.borrow();
 
-                let next_key = match &next_borrow.log_entry.entry {
-                    Entry::Put { key, .. } => key,
-                    Entry::Del { key } => key,
-                    Entry::Empty => break,
-                };
-
-                match next_key.as_slice().cmp(&*key) {
-                    std::cmp::Ordering::Less => {
-                        drop(next_borrow); // release before moving
-                        current = next.clone();
+                match Self::user_key(&next_ref.log_entry.entry).cmp(key) {
+                    Ordering::Less => {
+                        drop(next_ref);
+                        current = next_rc;
                     }
-                    std::cmp::Ordering::Equal => {
-                        if next_borrow.log_entry.log_seq_num <= log_seq_num {
-                            return Some(next_borrow.log_entry.clone());
-                        }
-                        drop(next_borrow);
-                        current = next.clone();
-                    }
-                    std::cmp::Ordering::Greater => break,
+                    _ => break,
                 }
             }
         }
 
-        None
-    }
+        // Level 0: full ordering
+        loop {
+            let next = {
+                let cur = current.borrow();
+                cur.levels[0].clone()
+            };
 
+            let Some(next_rc) = next else { return None };
+            let next_ref = next_rc.borrow();
+
+            match Self::user_key(&next_ref.log_entry.entry).cmp(key) {
+                Ordering::Less => {
+                    drop(next_ref);
+                    current = next_rc;
+                }
+                Ordering::Equal => {
+                    if next_ref.log_entry.log_seq_num <= snapshot_seq {
+                        return Some(next_ref.log_entry.clone());
+                    }
+                    drop(next_ref);
+                    current = next_rc;
+                }
+                Ordering::Greater => return None,
+            }
+        }
+    }
     pub fn iter(&self) -> SkipListIter {
         // First real node = head.levels[0]
         let first = self.head.borrow().levels.get(0).cloned().flatten();
 
         SkipListIter { current: first }
     }
-}
-
-// Helper to avoid rand crate
-fn rand_bool(prob: f64) -> bool {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .subsec_nanos();
-    let x = (nanos % 1000) as f64 / 1000.0;
-    x < prob
 }
 
 impl Display for SkipList {

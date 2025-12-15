@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{error::Error, sync::Arc};
 
 use super::{
     entry::{Entry, LogEntry},
@@ -27,7 +27,55 @@ fn new_del_int_entry(key: i32, log_seq_num: u64) -> Arc<LogEntry> {
 }
 
 #[test]
-fn test_skiplist_insert_and_delete() -> Result<(), Box<dyn std::error::Error>> {
+fn test_duplicates() -> Result<(), Box<dyn Error>> {
+    let skiplist = SkipList::new(0.5, 1_000, 3);
+
+    // insert
+    let put_entry_1 = new_put_int_entry(3, 1);
+    skiplist.insert(put_entry_1.clone());
+    skiplist.insert(put_entry_1.clone());
+
+    // get
+    let got_entry_1 = skiplist.get(&(3 as i32).to_be_bytes(), 10);
+    assert_eq!(Some(put_entry_1.clone()), got_entry_1);
+
+    // insert
+    let put_entry_2 = new_put_int_entry(3, 2);
+    skiplist.insert(put_entry_2.clone());
+
+    // get
+    let got_entry_2 = skiplist.get(&(3 as i32).to_be_bytes(), 10);
+    assert_eq!(Some(put_entry_2.clone()), got_entry_2);
+
+    // insert
+    let put_entry_3 = new_put_int_entry(3, 3);
+    skiplist.insert(put_entry_3.clone());
+
+    // get
+    let got_entry_3 = skiplist.get(&(3 as i32).to_be_bytes(), 10);
+    assert_eq!(Some(put_entry_3.clone()), got_entry_3);
+
+    // insert
+    let _ = new_put_int_entry(3, 1);
+    skiplist.insert(put_entry_3.clone());
+
+    // get most recent sequence 3, not the most recent insert
+    let got_entry_3_prime = skiplist.get(&(3 as i32).to_be_bytes(), 10);
+    assert_eq!(Some(put_entry_3.clone()), got_entry_3_prime);
+
+    // get most recent sequence 2, not sequence 3
+    let got_entry_2_prime = skiplist.get(&(3 as i32).to_be_bytes(), 2);
+    assert_eq!(Some(put_entry_2.clone()), got_entry_2_prime);
+
+    // get most recent sequence 1, not sequence 3
+    let got_entry_1_prime = skiplist.get(&(3 as i32).to_be_bytes(), 1);
+    assert_eq!(Some(put_entry_1.clone()), got_entry_1_prime);
+
+    Ok(())
+}
+
+#[test]
+fn test_skiplist_insert_and_delete() -> Result<(), Box<dyn Error>> {
     let skiplist = SkipList::new(0.5, 1_000, 3);
 
     let key_1: i32 = 1;
@@ -52,7 +100,7 @@ fn test_skiplist_insert_and_delete() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_skiplist_with_increasing_insert_keys() -> Result<(), Box<dyn std::error::Error>> {
+fn test_skiplist_with_increasing_insert_keys() -> Result<(), Box<dyn Error>> {
     let skiplist = SkipList::new(0.5, 1_000, 3);
 
     let mut expected_keys: Vec<Vec<u8>> = Vec::new();
@@ -88,7 +136,7 @@ fn test_skiplist_with_increasing_insert_keys() -> Result<(), Box<dyn std::error:
 }
 
 #[test]
-fn test_skiplist_with_decreasing_insert_keys() -> Result<(), Box<dyn std::error::Error>> {
+fn test_skiplist_with_decreasing_insert_keys() -> Result<(), Box<dyn Error>> {
     let skiplist = SkipList::new(0.5, 1_000, 3);
 
     let mut expected_keys: Vec<Vec<u8>> = Vec::new();

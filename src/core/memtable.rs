@@ -14,138 +14,6 @@ use super::{
 ///////////////////////////////////////
 
 #[derive(Debug)]
-pub enum MemtableManagerError {
-    MutexLockFailed(String),
-    MemtableError(MemtableError),
-    ImmutableMemtableError(ImmutableMemtableError),
-    UnableToInsertEntry,
-}
-
-impl Display for MemtableManagerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MemtableManagerError::MutexLockFailed(e) => write!(f, "MutexLockFailed: {}", e),
-            MemtableManagerError::MemtableError(e) => write!(f, "MemtableError: {}", e),
-            MemtableManagerError::ImmutableMemtableError(e) => {
-                write!(f, "ImmutableMemtableError: {}", e)
-            }
-            MemtableManagerError::UnableToInsertEntry => write!(f, "UnableToInsertEntry"),
-        }
-    }
-}
-
-impl Error for MemtableManagerError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            MemtableManagerError::MutexLockFailed(_) => None,
-            MemtableManagerError::MemtableError(e) => Some(e),
-            MemtableManagerError::ImmutableMemtableError(e) => Some(e),
-            MemtableManagerError::UnableToInsertEntry => None,
-        }
-    }
-}
-
-impl<T> From<std::sync::PoisonError<std::sync::MutexGuard<'_, T>>> for MemtableManagerError {
-    fn from(value: std::sync::PoisonError<std::sync::MutexGuard<'_, T>>) -> Self {
-        MemtableManagerError::MutexLockFailed(value.to_string())
-    }
-}
-
-impl From<MemtableError> for MemtableManagerError {
-    fn from(value: MemtableError) -> Self {
-        MemtableManagerError::MemtableError(value)
-    }
-}
-
-impl From<ImmutableMemtableError> for MemtableManagerError {
-    fn from(value: ImmutableMemtableError) -> Self {
-        MemtableManagerError::ImmutableMemtableError(value)
-    }
-}
-
-pub struct MemtableManager {
-    active_memtable: Mutex<Arc<Memtable>>,
-    immutable_memtables: Mutex<Vec<Arc<ImmutableMemtable>>>,
-
-    memory: Arc<MemoryManager>,
-    db_context: Arc<DBContext>,
-}
-
-impl MemtableManager {
-    pub fn new(db_context: Arc<DBContext>, memory: Arc<MemoryManager>) -> MemtableManager {
-        MemtableManager {
-            active_memtable: Mutex::new(Arc::new(Memtable::new(
-                db_context.clone(),
-                memory.clone(),
-            ))),
-            immutable_memtables: Mutex::new(Vec::new()),
-            memory,
-            db_context,
-        }
-    }
-
-    pub fn insert(&self, log_entry: Arc<LogEntry>) -> Result<(), MemtableManagerError> {
-        let inserted = self.active_memtable.lock()?.insert(log_entry.clone())?;
-        if inserted {
-            return Ok(());
-        }
-
-        // the active memtable is full. The active memtable needs to be made into a
-        // immutable memtable and a new active memtable created.
-        self.create_new_active_memtable()?;
-
-        let inserted = self.active_memtable.lock()?.insert(log_entry)?;
-        if inserted {
-            return Ok(());
-        }
-
-        Ok(())
-    }
-
-    pub fn get(
-        &self,
-        key: &Vec<u8>,
-        log_seq_num: u64,
-    ) -> Result<Option<Arc<LogEntry>>, MemtableManagerError> {
-        let val = self.active_memtable.lock()?.get(key, log_seq_num)?;
-        if val.is_some() {
-            return Ok(val);
-        }
-
-        let immutable_memtables = self.immutable_memtables.lock()?.clone();
-        for memtable in immutable_memtables.iter().rev() {
-            let val = memtable.get(key, log_seq_num);
-            if val.is_some() {
-                return Ok(val);
-            }
-        }
-
-        Ok(None)
-    }
-
-    pub fn get_immutable_memtables(
-        &self,
-    ) -> Result<Vec<Arc<ImmutableMemtable>>, MemtableManagerError> {
-        Ok(self.immutable_memtables.lock()?.clone())
-    }
-
-    fn create_new_active_memtable(&self) -> Result<(), MemtableManagerError> {
-        let mut active_memtable_guard = self.active_memtable.lock()?;
-        let old = std::mem::replace(
-            &mut *active_memtable_guard,
-            Arc::new(Memtable::new(self.db_context.clone(), self.memory.clone())),
-        );
-
-        let immutable_memtable = Arc::new(ImmutableMemtable::new(self.db_context.clone(), old)?);
-        self.immutable_memtables.lock()?.push(immutable_memtable);
-
-        Ok(())
-    }
-}
-
-///////////////////////////////////////
-
-#[derive(Debug)]
 pub enum MemtableError {
     MutexLockFailed(String),
     MemoryRecordError(MemoryRecordError),
@@ -282,6 +150,8 @@ impl From<MemoryRecordError> for ImmutableMemtableError {
 }
 
 pub struct ImmutableMemtable {
+    id: usize,
+
     skip_list: SkipList,
     db_context: Arc<DBContext>,
 
@@ -290,6 +160,7 @@ pub struct ImmutableMemtable {
 
 impl ImmutableMemtable {
     pub fn new(
+        id: usize,
         db_context: Arc<DBContext>,
         memtable: Arc<Memtable>,
     ) -> Result<ImmutableMemtable, ImmutableMemtableError> {
@@ -298,6 +169,7 @@ impl ImmutableMemtable {
             Some(memory_record) => {
                 let skip_list = memtable.copy_skip_list()?;
                 Ok(ImmutableMemtable {
+                    id,
                     db_context,
                     skip_list,
                     memory_record,

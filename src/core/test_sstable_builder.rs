@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{error::Error, sync::Arc};
 
 use crate::core::{entry, memtable};
 
@@ -9,7 +9,7 @@ use super::{
 };
 
 #[test]
-fn test_build_from_immutable_memtable() -> Result<(), Box<dyn std::error::Error>> {
+fn test_build_from_immutable_memtable() -> Result<(), Box<dyn Error>> {
     let tc = TestContext::new();
 
     // create the memtable with some sample data
@@ -30,7 +30,7 @@ fn test_build_from_immutable_memtable() -> Result<(), Box<dyn std::error::Error>
         )))?;
         key_values.push((key.clone(), key.clone()));
     }
-    let immuitable_memtable = ImmutableMemtable::new(tc.db_context.clone(), table)?;
+    let immuitable_memtable = ImmutableMemtable::new(0, tc.db_context.clone(), table)?;
 
     // create the table writer
     let sstable_bldr = SSTableBuilder::build_from_immutable_memtable(

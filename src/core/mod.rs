@@ -8,12 +8,13 @@ pub mod memtable;
 pub mod skiplist;
 pub mod sstable_builder;
 pub mod sstable_writer;
-pub mod test_utils;
 pub mod wal;
 
 #[cfg(test)]
-mod test_memtable;
+mod test_db;
 #[cfg(test)]
 mod test_skiplist;
 #[cfg(test)]
 mod test_sstable_builder;
+#[cfg(test)]
+mod test_utils;

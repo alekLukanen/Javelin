@@ -12,20 +12,20 @@ use super::{
     db_context::DBContext,
     memory_manager::{MemoryManager, MemoryRecord, MemoryRecordError},
     memtable::ImmutableMemtable,
+    sstable_builder::Block,
 };
 
 /////////////////////////////////////////////////////
 
-pub struct FileData {
+pub struct SSTable {
     id: u64,
-    filter: FileFilterBlock,
-    index: FileIndexBlock,
+    index: Block,
 }
 
 pub struct FileBlockData {
     file_id: u64,
     block_id: u16,
-    data: Option<Vec<u8>>,
+    data: Block,
 
     record: MemoryRecord,
 }
@@ -163,13 +163,16 @@ impl BlockCache {
     pub fn new_lvl0_sstable_file(
         &self,
         memtable: ImmutableMemtable,
-    ) -> Result<Arc<FileData>, BlockCacheError> {
+    ) -> Result<Arc<SSTable>, BlockCacheError> {
         // create the file data blocks
 
-        Ok(Arc::new(FileData {
+        Ok(Arc::new(SSTable {
             id: 0,
-            filter: FileFilterBlock {},
-            index: FileIndexBlock {},
+            index: Block::IndexBlock {
+                keys: Vec::new(),
+                keys_len: 0,
+                restarts: Vec::new(),
+            },
         }))
     }
 }
