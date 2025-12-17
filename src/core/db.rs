@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fmt::Display;
 use std::sync::{Arc, Mutex, atomic};
+use std::thread::JoinHandle;
 
 use super::block_cache::BlockCache;
 use super::db_context::DBContext;
@@ -57,18 +58,30 @@ impl From<ImmutableMemtableError> for DBError {
 
 ////////////////////////////////////////////
 
+#[derive(Clone)]
 struct ReadState {
     memtables: Vec<Arc<ImmutableMemtable>>,
     sstable_version: SSTableVersion,
 }
 
+impl ReadState {
+    fn duplicate(&self) -> ReadState {
+        ReadState {
+            memtables: self.memtables.clone(),
+            sstable_version: self.sstable_version.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
 struct SSTableVersion {
     memtables_being_flushed: Vec<usize>,
 }
 
 pub struct DB {
-    db_inner: Mutex<DBInner>,
-    wal: WAL,
+    db_backend: Arc<DBBackend>,
+    maintainer_handle: JoinHandle<()>,
+
     memory: Arc<MemoryManager>,
     db_context: Arc<DBContext>,
 }
@@ -77,63 +90,122 @@ impl DB {
     pub fn new(config: DBConfig) -> DB {
         let db_context = Arc::new(DBContext::new(config));
         let memory = Arc::new(MemoryManager::new(db_context.clone()));
-        DB {
+        let db_backend = Arc::new(DBBackend {
             db_inner: Mutex::new(DBInner {
                 active_memtable: Arc::new(Memtable::new(db_context.clone(), memory.clone())),
-                immutable_memtables: Vec::new(),
+                read_state: Arc::new(ReadState {
+                    memtables: Vec::new(),
+                    sstable_version: SSTableVersion {
+                        memtables_being_flushed: Vec::new(),
+                    },
+                }),
                 immutable_memtable_idx: atomic::AtomicUsize::new(0),
                 block_cache: BlockCache::new(db_context.clone(), memory.clone()),
                 memory: memory.clone(),
                 db_context: db_context.clone(),
             }),
-            memory,
             wal: WAL::new(),
+            db_context: db_context.clone(),
+        });
+        let db_backend_ref = db_backend.clone();
+        let handle = std::thread::spawn(move || {
+            let resp = DBBackend::maintainer(db_backend_ref.clone());
+            if let Err(err) = resp {
+                db_backend_ref
+                    .db_context
+                    .log_error(format!("[DB] {:?}", err));
+            }
+        });
+
+        DB {
+            db_backend,
+            maintainer_handle: handle,
+            memory,
             db_context,
         }
     }
 
     pub fn close(&self) -> Result<(), DBError> {
-        self.db_inner.lock()?.block_cache.close();
+        self.db_backend.db_inner.lock()?.block_cache.close();
         Ok(())
     }
 
     pub fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, DBError> {
-        let val = self
-            .db_inner
-            .lock()?
-            .get(key, self.wal.incr_log_sequence_num())?;
+        let log_seq_num = self.db_backend.wal.incr_log_sequence_num();
+
+        let inner_guard = self.db_backend.db_inner.lock()?;
+
+        let val = inner_guard.active_memtable.get(key, log_seq_num)?;
         match val {
             Some(val) => match &val.entry {
-                Entry::Put { val, .. } => Ok(Some(val.clone())),
-                Entry::Del { .. } => Ok(None),
-                Entry::Empty => Ok(None),
+                Entry::Put { val, .. } => return Ok(Some(val.clone())),
+                Entry::Del { .. } => return Ok(None),
+                Entry::Empty => return Ok(None),
             },
-            None => Ok(None),
+            None => {}
         }
+
+        let immutable_memtables = &inner_guard.get_read_state().memtables;
+        drop(inner_guard);
+
+        for memtable in immutable_memtables.iter().rev() {
+            let val = memtable.get(key, log_seq_num);
+            return match val {
+                Some(val) => match &val.entry {
+                    Entry::Put { val, .. } => Ok(Some(val.clone())),
+                    Entry::Del { .. } => Ok(None),
+                    Entry::Empty => Ok(None),
+                },
+                None => Ok(None),
+            };
+        }
+
+        Ok(None)
     }
 
     pub fn set(&self, key: Vec<u8>, val: Vec<u8>) -> Result<(), DBError> {
-        self.db_inner.lock()?.insert(Arc::new(LogEntry::new(
-            Entry::Put { key, val },
-            self.wal.incr_log_sequence_num(),
-        )))?;
+        self.db_backend
+            .db_inner
+            .lock()?
+            .insert(Arc::new(LogEntry::new(
+                Entry::Put { key, val },
+                self.db_backend.wal.incr_log_sequence_num(),
+            )))?;
         Ok(())
     }
 
     pub fn delete(&self, key: Vec<u8>) -> Result<(), DBError> {
-        self.db_inner.lock()?.insert(Arc::new(LogEntry::new(
-            Entry::Del { key },
-            self.wal.incr_log_sequence_num(),
-        )))?;
+        self.db_backend
+            .db_inner
+            .lock()?
+            .insert(Arc::new(LogEntry::new(
+                Entry::Del { key },
+                self.db_backend.wal.incr_log_sequence_num(),
+            )))?;
         Ok(())
     }
 }
 
 //////////////////////////////////////////
 
-pub struct DBInner {
+struct DBBackend {
+    db_inner: Mutex<DBInner>,
+    wal: WAL,
+
+    db_context: Arc<DBContext>,
+}
+
+impl DBBackend {
+    fn maintainer(db_backend: Arc<DBBackend>) -> Result<(), DBError> {
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+}
+
+struct DBInner {
     active_memtable: Arc<Memtable>,
-    immutable_memtables: Vec<Arc<ImmutableMemtable>>,
+    read_state: Arc<ReadState>,
     immutable_memtable_idx: atomic::AtomicUsize,
     block_cache: BlockCache,
 
@@ -142,7 +214,7 @@ pub struct DBInner {
 }
 
 impl DBInner {
-    pub fn insert(&mut self, log_entry: Arc<LogEntry>) -> Result<(), DBError> {
+    fn insert(&mut self, log_entry: Arc<LogEntry>) -> Result<(), DBError> {
         let inserted = self.active_memtable.insert(log_entry.clone())?;
         if inserted {
             return Ok(());
@@ -160,25 +232,8 @@ impl DBInner {
         Ok(())
     }
 
-    pub fn get(&self, key: &Vec<u8>, log_seq_num: u64) -> Result<Option<Arc<LogEntry>>, DBError> {
-        let val = self.active_memtable.get(key, log_seq_num)?;
-        if val.is_some() {
-            return Ok(val);
-        }
-
-        let immutable_memtables = self.immutable_memtables.clone();
-        for memtable in immutable_memtables.iter().rev() {
-            let val = memtable.get(key, log_seq_num);
-            if val.is_some() {
-                return Ok(val);
-            }
-        }
-
-        Ok(None)
-    }
-
-    pub fn get_immutable_memtables(&self) -> Result<Vec<Arc<ImmutableMemtable>>, DBError> {
-        Ok(self.immutable_memtables.clone())
+    fn get_read_state(&self) -> Arc<ReadState> {
+        self.read_state.clone()
     }
 
     fn create_new_active_memtable(&mut self) -> Result<(), DBError> {
@@ -195,7 +250,12 @@ impl DBInner {
 
         let immutable_memtable =
             Arc::new(ImmutableMemtable::new(im_id, self.db_context.clone(), old)?);
-        self.immutable_memtables.push(immutable_memtable);
+
+        // update the read state
+        let mut read_state = self.read_state.duplicate();
+        read_state.memtables.push(immutable_memtable);
+
+        self.read_state = Arc::new(read_state);
 
         Ok(())
     }

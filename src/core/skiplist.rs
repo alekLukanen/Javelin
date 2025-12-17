@@ -1,4 +1,11 @@
-use std::{cell::RefCell, cmp::Ordering, error::Error, fmt::Display, rc::Rc, sync::Arc};
+use std::{
+    cell::RefCell,
+    cmp::Ordering,
+    error::Error,
+    fmt::Display,
+    rc::Rc,
+    sync::{Arc, RwLock},
+};
 
 use super::entry::{Entry, LogEntry};
 
@@ -31,7 +38,7 @@ impl<T> From<std::sync::PoisonError<std::sync::MutexGuard<'_, T>>> for SkipListE
 
 ////////////////////////////
 
-type NodeLink = Option<Rc<RefCell<Node>>>;
+type NodeLink = Option<Arc<RwLock<Node>>>;
 
 #[derive(Clone)]
 struct Node {
@@ -41,7 +48,7 @@ struct Node {
 
 #[derive(Clone)]
 pub struct SkipList {
-    head: Rc<RefCell<Node>>,
+    head: Arc<RwLock<Node>>,
     probability: f64,
     num_levels: usize,
 }
@@ -52,7 +59,7 @@ impl SkipList {
         let mut num_levels = (expected_num_keys as f64).log(base).ceil() as usize;
         num_levels = (allowed_max_level as usize).min(num_levels);
 
-        let head = Rc::new(RefCell::new(Node {
+        let head = Arc::new(RwLock::new(Node {
             log_entry: Arc::new(LogEntry {
                 entry: Entry::Empty,
                 log_seq_num: u64::MAX,
@@ -101,11 +108,10 @@ impl SkipList {
         let mut update = vec![self.head.clone(); self.num_levels];
         let mut current = self.head.clone();
 
-        // Traverse top-down
         for level in (0..self.num_levels).rev() {
             loop {
                 let next = {
-                    let cur = current.borrow();
+                    let cur = current.read().unwrap();
                     if level < cur.levels.len() {
                         cur.levels[level].clone()
                     } else {
@@ -113,8 +119,8 @@ impl SkipList {
                     }
                 };
 
-                let Some(next_rc) = next else { break };
-                let next_ref = next_rc.borrow();
+                let Some(next_arc) = next else { break };
+                let next_ref = next_arc.read().unwrap();
 
                 let cmp = if level == 0 {
                     Self::cmp_full(&next_ref.log_entry, &log_entry)
@@ -124,7 +130,7 @@ impl SkipList {
 
                 if cmp == Ordering::Less {
                     drop(next_ref);
-                    current = next_rc;
+                    current = next_arc;
                 } else {
                     break;
                 }
@@ -133,16 +139,15 @@ impl SkipList {
         }
 
         let node_level = self.random_level();
-        let new_node = Rc::new(RefCell::new(Node {
+        let new_node = Arc::new(RwLock::new(Node {
             log_entry,
             levels: vec![None; node_level],
         }));
 
-        // Splice
         for level in 0..node_level {
-            let mut prev = update[level].borrow_mut();
+            let mut prev = update[level].write().unwrap();
             let next = prev.levels[level].take();
-            new_node.borrow_mut().levels[level] = next;
+            new_node.write().unwrap().levels[level] = next;
             prev.levels[level] = Some(new_node.clone());
         }
     }
@@ -150,11 +155,10 @@ impl SkipList {
     pub fn get(&self, key: &[u8], snapshot_seq: u64) -> Option<Arc<LogEntry>> {
         let mut current = self.head.clone();
 
-        // Only user-key traversal above level 0
         for level in (1..self.num_levels).rev() {
             loop {
                 let next = {
-                    let cur = current.borrow();
+                    let cur = current.read().unwrap();
                     if level < cur.levels.len() {
                         cur.levels[level].clone()
                     } else {
@@ -162,48 +166,50 @@ impl SkipList {
                     }
                 };
 
-                let Some(next_rc) = next else { break };
-                let next_ref = next_rc.borrow();
+                let Some(next_arc) = next else { break };
+                let next_ref = next_arc.read().unwrap();
 
                 match Self::user_key(&next_ref.log_entry.entry).cmp(key) {
                     Ordering::Less => {
                         drop(next_ref);
-                        current = next_rc;
+                        current = next_arc;
                     }
                     _ => break,
                 }
             }
         }
 
-        // Level 0: full ordering
         loop {
             let next = {
-                let cur = current.borrow();
+                let cur = current.read().unwrap();
                 cur.levels[0].clone()
             };
 
-            let Some(next_rc) = next else { return None };
-            let next_ref = next_rc.borrow();
+            let Some(next_arc) = next else { return None };
+            let next_ref = next_arc.read().unwrap();
 
             match Self::user_key(&next_ref.log_entry.entry).cmp(key) {
                 Ordering::Less => {
                     drop(next_ref);
-                    current = next_rc;
+                    current = next_arc;
                 }
                 Ordering::Equal => {
                     if next_ref.log_entry.log_seq_num <= snapshot_seq {
                         return Some(next_ref.log_entry.clone());
                     }
                     drop(next_ref);
-                    current = next_rc;
+                    current = next_arc;
                 }
                 Ordering::Greater => return None,
             }
         }
     }
+
     pub fn iter(&self) -> SkipListIter {
-        // First real node = head.levels[0]
-        let first = self.head.borrow().levels.get(0).cloned().flatten();
+        let first = {
+            let head = self.head.read().unwrap();
+            head.levels.get(0).cloned().flatten()
+        };
 
         SkipListIter { current: first }
     }
@@ -212,20 +218,18 @@ impl SkipList {
 impl Display for SkipList {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut res = String::new();
-
         let mut current = self.head.clone();
+
         loop {
-            let next_opt = current.borrow().levels[0].clone();
-            let next = match next_opt {
-                Some(n) => n,
-                None => break,
+            let next = {
+                let cur = current.read().unwrap();
+                cur.levels[0].clone()
             };
 
-            // Keep the borrow alive in a variable
-            let next_borrow = next.borrow();
-            res = format!("{}: {:?}", res, next_borrow.log_entry.entry);
-            drop(next_borrow);
-            current = next;
+            let Some(next_arc) = next else { break };
+            let next_ref = next_arc.read().unwrap();
+            res = format!("{}: {:?}", res, next_ref.log_entry.entry);
+            current = next_arc.clone();
         }
 
         write!(f, "{}", res)
@@ -235,26 +239,22 @@ impl Display for SkipList {
 /////////////////////////////////////////////////////
 
 pub struct SkipListIter {
-    current: Option<Rc<RefCell<Node>>>,
+    current: Option<Arc<RwLock<Node>>>,
 }
 
 impl Iterator for SkipListIter {
     type Item = Arc<LogEntry>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Move to next node
-        let curr_rc = self.current.take()?;
-        let curr = curr_rc.borrow();
+        let curr_arc = self.current.take()?;
+        let curr = curr_arc.read().unwrap();
 
-        // Extract current log_entry unless it's the head's dummy entry
         let entry = match &curr.log_entry.entry {
             Entry::Empty => None,
             _ => Some(curr.log_entry.clone()),
         };
 
-        // Advance to next (level 0 always exists)
         self.current = curr.levels.get(0).cloned().flatten();
-
         entry
     }
 }
