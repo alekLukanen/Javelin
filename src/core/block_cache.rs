@@ -11,7 +11,6 @@ use std::{
 use super::{
     db_context::DBContext,
     memory_manager::{MemoryManager, MemoryRecord, MemoryRecordError},
-    memtable::ImmutableMemtable,
     sstable_builder::Block,
 };
 
@@ -103,7 +102,7 @@ pub struct BlockCache {
 }
 
 impl BlockCache {
-    fn new(db_context: Arc<DBContext>, memory_manager: Arc<MemoryManager>) -> BlockCache {
+    pub fn new(db_context: Arc<DBContext>, memory_manager: Arc<MemoryManager>) -> BlockCache {
         let mut shards = Vec::new();
         let num_shards = db_context.config().block_cache_num_shards();
         for _ in 0..num_shards {
@@ -112,12 +111,38 @@ impl BlockCache {
         let inner = Arc::new(BlockCacheInner {
             memory_manager: memory_manager.clone(),
             db_context: db_context.clone(),
-            shards: Vec::new(),
+            close_called: AtomicBool::new(false),
+            shards,
             num_shards,
             maintain_idx: AtomicUsize::new(0),
         });
-        let handle = std::thread::spawn(|| {});
+        let inner_clone = inner.clone();
+        let handle = std::thread::spawn(move || {
+            let res = inner_clone.maintain();
+            if let Err(err) = res {
+                db_context.log_error(format!("[BlockCache] {:?}", err));
+            }
+        });
         BlockCache { inner, handle }
+    }
+
+    pub fn close(&self) {
+        self.inner.close_called.store(true, Ordering::Relaxed);
+        let mut waits: usize = 0;
+        loop {
+            if self.handle.is_finished() {
+                break;
+            }
+
+            if waits % 1000 == 0 {
+                self.inner
+                    .db_context
+                    .log_info("[BlockCache] Waiting for the maintain thread to exit".to_string());
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            waits += 1;
+        }
     }
 
     fn add_data_block(
@@ -159,28 +184,13 @@ impl BlockCache {
             Err(BlockCacheError::UnableToAllocateMemory)
         }
     }
-
-    pub fn new_lvl0_sstable_file(
-        &self,
-        memtable: ImmutableMemtable,
-    ) -> Result<Arc<SSTable>, BlockCacheError> {
-        // create the file data blocks
-
-        Ok(Arc::new(SSTable {
-            id: 0,
-            index: Block::IndexBlock {
-                keys: Vec::new(),
-                keys_len: 0,
-                restarts: Vec::new(),
-            },
-        }))
-    }
 }
 
 pub struct BlockCacheInner {
     memory_manager: Arc<MemoryManager>,
     db_context: Arc<DBContext>,
 
+    close_called: AtomicBool,
     shards: Vec<Mutex<BlockCacheShard>>,
     num_shards: usize,
     maintain_idx: AtomicUsize,
@@ -189,6 +199,11 @@ pub struct BlockCacheInner {
 impl BlockCacheInner {
     fn maintain(&self) -> Result<(), BlockCacheError> {
         loop {
+            if self.close_called.load(Ordering::Relaxed) {
+                self.db_context
+                    .log_info(format!("[BlockCache] Exiting the maintain loop"));
+                break;
+            }
             let idx = self.maintain_idx.fetch_add(1, Ordering::Relaxed) % self.num_shards;
             let mut shard = self.shards.get(idx).expect("expected shard").lock()?;
             let keys_to_delete: Vec<(u64, u16)> = shard
@@ -207,6 +222,7 @@ impl BlockCacheInner {
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        Ok(())
     }
 }
 

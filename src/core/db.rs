@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt::Display;
 use std::sync::{Arc, Mutex, atomic};
 
+use super::block_cache::BlockCache;
 use super::db_context::DBContext;
 use super::entry::{Entry, LogEntry};
 use super::memory_manager::MemoryManager;
@@ -56,15 +57,19 @@ impl From<ImmutableMemtableError> for DBError {
 
 ////////////////////////////////////////////
 
-pub struct ReadState {
+struct ReadState {
     memtables: Vec<Arc<ImmutableMemtable>>,
-    // sstable_version: SSTableVersion,
+    sstable_version: SSTableVersion,
+}
+
+struct SSTableVersion {
+    memtables_being_flushed: Vec<usize>,
 }
 
 pub struct DB {
     db_inner: Mutex<DBInner>,
-    memory: Arc<MemoryManager>,
     wal: WAL,
+    memory: Arc<MemoryManager>,
     db_context: Arc<DBContext>,
 }
 
@@ -77,6 +82,7 @@ impl DB {
                 active_memtable: Arc::new(Memtable::new(db_context.clone(), memory.clone())),
                 immutable_memtables: Vec::new(),
                 immutable_memtable_idx: atomic::AtomicUsize::new(0),
+                block_cache: BlockCache::new(db_context.clone(), memory.clone()),
                 memory: memory.clone(),
                 db_context: db_context.clone(),
             }),
@@ -84,6 +90,11 @@ impl DB {
             wal: WAL::new(),
             db_context,
         }
+    }
+
+    pub fn close(&self) -> Result<(), DBError> {
+        self.db_inner.lock()?.block_cache.close();
+        Ok(())
     }
 
     pub fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, DBError> {
@@ -104,7 +115,7 @@ impl DB {
     pub fn set(&self, key: Vec<u8>, val: Vec<u8>) -> Result<(), DBError> {
         self.db_inner.lock()?.insert(Arc::new(LogEntry::new(
             Entry::Put { key, val },
-            0, //self.wal.incr_log_sequence_num(),
+            self.wal.incr_log_sequence_num(),
         )))?;
         Ok(())
     }
@@ -112,13 +123,9 @@ impl DB {
     pub fn delete(&self, key: Vec<u8>) -> Result<(), DBError> {
         self.db_inner.lock()?.insert(Arc::new(LogEntry::new(
             Entry::Del { key },
-            0, //self.wal.incr_log_sequence_num(),
+            self.wal.incr_log_sequence_num(),
         )))?;
         Ok(())
-    }
-
-    pub fn iterator(&self, opts: IteratorOptions) -> Result<Iterator, DBError> {
-        Ok(Iterator {})
     }
 }
 
@@ -128,6 +135,7 @@ pub struct DBInner {
     active_memtable: Arc<Memtable>,
     immutable_memtables: Vec<Arc<ImmutableMemtable>>,
     immutable_memtable_idx: atomic::AtomicUsize,
+    block_cache: BlockCache,
 
     memory: Arc<MemoryManager>,
     db_context: Arc<DBContext>,
@@ -194,10 +202,3 @@ impl DBInner {
 }
 
 /////////////////////////////////////////
-
-pub struct IteratorOptions {
-    lower_bound: Vec<u8>,
-    upper_bound: Vec<u8>,
-}
-
-pub struct Iterator {}
