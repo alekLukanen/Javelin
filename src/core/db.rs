@@ -1,13 +1,17 @@
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::Display;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, atomic};
 use std::thread::JoinHandle;
 
-use super::block_cache::BlockCache;
+use super::block_cache::{BlockCache, BlockCacheError};
 use super::db_context::DBContext;
 use super::entry::{Entry, LogEntry};
 use super::memory_manager::MemoryManager;
 use super::memtable::{ImmutableMemtable, ImmutableMemtableError, Memtable, MemtableError};
+use super::sstable_builder::SSTableBuilder;
+use super::sstable_writer::{SSTableWriter, SSTableWriterError};
 use super::wal::WAL;
 use crate::core::db_config::DBConfig;
 
@@ -15,6 +19,8 @@ use crate::core::db_config::DBConfig;
 pub enum DBError {
     MemtableError(MemtableError),
     ImmutableMemtableError(ImmutableMemtableError),
+    SSTableWriterError(SSTableWriterError),
+    BlockCacheError(BlockCacheError),
     MutexLockFailed(String),
 }
 
@@ -23,6 +29,8 @@ impl Display for DBError {
         match self {
             DBError::MemtableError(e) => write!(f, "MemtableError: {}", e),
             DBError::ImmutableMemtableError(e) => write!(f, "ImmutableMemtableError: {}", e),
+            DBError::SSTableWriterError(e) => write!(f, "SSTableWriterError: {}", e),
+            DBError::BlockCacheError(e) => write!(f, "BlockCacheError: {}", e),
             DBError::MutexLockFailed(v) => write!(f, "MutexLockFailed: {}", v),
         }
     }
@@ -33,6 +41,8 @@ impl Error for DBError {
         match self {
             DBError::MemtableError(e) => Some(e),
             DBError::ImmutableMemtableError(e) => Some(e),
+            DBError::SSTableWriterError(e) => Some(e),
+            DBError::BlockCacheError(e) => Some(e),
             DBError::MutexLockFailed(_) => None,
         }
     }
@@ -56,6 +66,18 @@ impl From<ImmutableMemtableError> for DBError {
     }
 }
 
+impl From<SSTableWriterError> for DBError {
+    fn from(value: SSTableWriterError) -> Self {
+        DBError::SSTableWriterError(value)
+    }
+}
+
+impl From<BlockCacheError> for DBError {
+    fn from(value: BlockCacheError) -> Self {
+        DBError::BlockCacheError(value)
+    }
+}
+
 ////////////////////////////////////////////
 
 #[derive(Clone)]
@@ -75,7 +97,7 @@ impl ReadState {
 
 #[derive(Clone)]
 struct SSTableVersion {
-    memtables_being_flushed: Vec<usize>,
+    memtables_flushed: HashSet<usize>,
 }
 
 pub struct DB {
@@ -96,11 +118,14 @@ impl DB {
                 read_state: Arc::new(ReadState {
                     memtables: Vec::new(),
                     sstable_version: SSTableVersion {
-                        memtables_being_flushed: Vec::new(),
+                        memtables_flushed: HashSet::new(),
                     },
                 }),
                 immutable_memtable_idx: atomic::AtomicUsize::new(0),
                 block_cache: BlockCache::new(db_context.clone(), memory.clone()),
+                manifest: Manifest {
+                    flushing_memtables: HashSet::new(),
+                },
                 memory: memory.clone(),
                 db_context: db_context.clone(),
             }),
@@ -191,16 +216,71 @@ impl DB {
 struct DBBackend {
     db_inner: Mutex<DBInner>,
     wal: WAL,
-
     db_context: Arc<DBContext>,
 }
 
 impl DBBackend {
+    /// Responsible for:
+    /// - Flusing immutable memtables
+    /// - Compacting SSTables when a layer gets too large
     fn maintainer(db_backend: Arc<DBBackend>) -> Result<(), DBError> {
         loop {
+            // check for immutable memtables to flush
+
+            match Self::flush_immutable_memtable(&db_backend) {
+                Ok(_) => {}
+                Err(err) => {
+                    db_backend
+                        .db_context
+                        .log_error(format!("[DBBackend-maintainer] {:?}", err));
+                }
+            }
+
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
+
+    fn flush_immutable_memtable(db_backend: &Arc<DBBackend>) -> Result<(), DBError> {
+        let mut guard = db_backend.db_inner.lock()?;
+
+        let (mt, mt_id) = {
+            let Some(mt) = guard.read_state.memtables.first() else {
+                return Ok(());
+            };
+            (mt.clone(), mt.id.clone())
+        };
+
+        guard.manifest.flushing_memtables.insert(mt_id);
+
+        // convert the immutable memtable to an sstable
+        // and write the blocks to the block cache
+
+        let file_num = db_backend.wal.incr_file_sequence_num();
+
+        let mut file_path = PathBuf::new();
+        file_path.push(db_backend.db_context.config().data_dir());
+        file_path.push(format!("{}.dat", file_num));
+
+        let sstable_builder = SSTableBuilder::build_from_immutable_memtable(
+            db_backend.db_context.clone(),
+            mt.clone(),
+        );
+        let sstable_writer =
+            SSTableWriter::new(db_backend.db_context.clone(), sstable_builder, file_path)?;
+
+        loop {
+            let Some(block) = sstable_writer.next_block()? else {
+                break;
+            };
+            guard.block_cache.add_data_block(block)?;
+        }
+
+        Ok(())
+    }
+}
+
+struct Manifest {
+    flushing_memtables: HashSet<usize>,
 }
 
 struct DBInner {
@@ -208,6 +288,9 @@ struct DBInner {
     read_state: Arc<ReadState>,
     immutable_memtable_idx: atomic::AtomicUsize,
     block_cache: BlockCache,
+
+    // maintainer state
+    manifest: Manifest,
 
     memory: Arc<MemoryManager>,
     db_context: Arc<DBContext>,

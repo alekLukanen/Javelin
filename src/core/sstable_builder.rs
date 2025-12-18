@@ -79,9 +79,9 @@ pub struct SSTableBuilder {
 impl SSTableBuilder {
     pub fn build_from_immutable_memtable(
         db_context: Arc<DBContext>,
-        memtable: ImmutableMemtable,
-        max_block_size: usize,
+        memtable: Arc<ImmutableMemtable>,
     ) -> SSTableBuilder {
+        let max_block_size = db_context.config().sstable_max_block_size();
         SSTableBuilder {
             db_context,
             returned_index_block: false,

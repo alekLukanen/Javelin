@@ -145,7 +145,7 @@ impl BlockCache {
         }
     }
 
-    fn add_data_block(
+    pub fn add_data_block(
         &self,
         block: FileBlockData,
     ) -> Result<(Option<BlockDataHandle>, bool), BlockCacheError> {
@@ -160,7 +160,7 @@ impl BlockCache {
         Ok(handle)
     }
 
-    fn get_data_block(
+    pub fn get_data_block(
         &self,
         file_id: u64,
         block_id: u16,

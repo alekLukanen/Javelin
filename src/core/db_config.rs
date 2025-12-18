@@ -10,6 +10,7 @@ pub struct DBConfig {
     block_cache_num_shards: usize,
 
     data_dir: Option<String>,
+    sstable_max_block_size: usize,
 
     logging_enabled: bool,
 }
@@ -46,6 +47,10 @@ impl DBConfig {
         }
     }
 
+    pub fn sstable_max_block_size(&self) -> usize {
+        self.sstable_max_block_size.clone()
+    }
+
     pub fn logging_enabled(&self) -> bool {
         self.logging_enabled
     }
@@ -67,6 +72,7 @@ impl DBConfigBuilder {
                 block_cache_num_shards: 3,
                 logging_enabled: false,
                 data_dir: None,
+                sstable_max_block_size: 2 << 14,
             },
         }
     }
@@ -112,6 +118,11 @@ impl DBConfigBuilder {
 
     pub fn data_dir(mut self, data_dir: String) -> DBConfigBuilder {
         self.config.data_dir = Some(data_dir);
+        self
+    }
+
+    pub fn sstable_max_block_size(mut self, val: usize) -> DBConfigBuilder {
+        self.config.sstable_max_block_size = val;
         self
     }
 

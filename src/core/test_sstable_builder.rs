@@ -1,6 +1,6 @@
 use std::{error::Error, sync::Arc};
 
-use crate::core::{entry, memtable};
+use crate::core::{db_config::DBConfigBuilder, entry, memtable};
 
 use super::{
     memtable::ImmutableMemtable,
@@ -10,7 +10,10 @@ use super::{
 
 #[test]
 fn test_build_from_immutable_memtable() -> Result<(), Box<dyn Error>> {
-    let tc = TestContext::new();
+    let config = DBConfigBuilder::new()
+        .sstable_max_block_size(10_000)
+        .build();
+    let tc = TestContext::new_from_config(config);
 
     // create the memtable with some sample data
     let table = Arc::new(memtable::Memtable::new(
@@ -30,14 +33,11 @@ fn test_build_from_immutable_memtable() -> Result<(), Box<dyn Error>> {
         )))?;
         key_values.push((key.clone(), key.clone()));
     }
-    let immuitable_memtable = ImmutableMemtable::new(0, tc.db_context.clone(), table)?;
+    let immuitable_memtable = Arc::new(ImmutableMemtable::new(0, tc.db_context.clone(), table)?);
 
     // create the table writer
-    let sstable_bldr = SSTableBuilder::build_from_immutable_memtable(
-        tc.db_context.clone(),
-        immuitable_memtable,
-        10_000,
-    );
+    let sstable_bldr =
+        SSTableBuilder::build_from_immutable_memtable(tc.db_context.clone(), immuitable_memtable);
 
     let blocks: Vec<Block> = sstable_bldr.collect();
     assert_eq!(1, blocks.len());

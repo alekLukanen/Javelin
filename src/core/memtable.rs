@@ -150,7 +150,7 @@ impl From<MemoryRecordError> for ImmutableMemtableError {
 }
 
 pub struct ImmutableMemtable {
-    id: usize,
+    pub(crate) id: usize,
 
     skip_list: SkipList,
     db_context: Arc<DBContext>,
