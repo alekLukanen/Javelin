@@ -24,7 +24,7 @@ pub struct SSTable {
 pub struct FileBlockData {
     file_id: u64,
     block_id: u16,
-    data: Block,
+    block: Block,
 
     record: MemoryRecord,
 }
@@ -63,26 +63,43 @@ impl BlockCacheShard {
         }
     }
 
-    fn add_data_block(&mut self, block: FileBlockData) -> (Option<BlockDataHandle>, bool) {
-        let key = (block.file_id.clone(), block.block_id.clone());
-        if self.data_blocks.contains_key(&key) {
-            return (None, false);
-        }
+    fn add_data_block(
+        &mut self,
+        file_id: u64,
+        block_id: u16,
+        block: Block,
+        record: MemoryRecord,
+    ) -> (Option<BlockDataHandle>, bool) {
+        match block {
+            Block::DataBlock { .. } => {
+                let key = (file_id.clone(), block_id.clone());
+                if self.data_blocks.contains_key(&key) {
+                    return (None, false);
+                }
 
-        let cached_data_block = Arc::new(CachedDataBlock {
-            refs: AtomicUsize::new(1),
-            evicted: AtomicBool::new(false),
-            data: Arc::new(block),
-        });
-        self.data_blocks
-            .insert(key.clone(), cached_data_block.clone());
-        self.lru_list.push_front(key);
-        (
-            Some(BlockDataHandle {
-                entry: cached_data_block,
-            }),
-            true,
-        )
+                let cached_data_block = Arc::new(CachedDataBlock {
+                    refs: AtomicUsize::new(1),
+                    evicted: AtomicBool::new(false),
+                    data: Arc::new(FileBlockData {
+                        file_id,
+                        block_id,
+                        block,
+                        record,
+                    }),
+                });
+                self.data_blocks
+                    .insert(key.clone(), cached_data_block.clone());
+                self.lru_list.push_front(key);
+                (
+                    Some(BlockDataHandle {
+                        entry: cached_data_block,
+                    }),
+                    true,
+                )
+            }
+            Block::IndexBlock { .. } => (None, false),
+            Block::FooterBlock { .. } => (None, false),
+        }
     }
 
     fn get_data_block(&mut self, file_id: u64, block_id: u16) -> Option<BlockDataHandle> {
@@ -147,17 +164,26 @@ impl BlockCache {
 
     pub fn add_data_block(
         &self,
-        block: FileBlockData,
+        file_id: u64,
+        block_id: u16,
+        block: Block,
     ) -> Result<(Option<BlockDataHandle>, bool), BlockCacheError> {
-        let shard_idx = (block.file_id as usize) % self.inner.num_shards;
-        let handle = self
-            .inner
-            .shards
-            .get(shard_idx)
-            .expect("expected shard")
-            .lock()?
-            .add_data_block(block);
-        Ok(handle)
+        match block {
+            Block::DataBlock { .. } => {
+                let record = self.new_pre_allocated_record(block.size())?;
+                let shard_idx = (file_id as usize) % self.inner.num_shards;
+                let handle = self
+                    .inner
+                    .shards
+                    .get(shard_idx)
+                    .expect("expected shard")
+                    .lock()?
+                    .add_data_block(file_id, block_id, block, record);
+                Ok(handle)
+            }
+            Block::IndexBlock { .. } => Ok((None, false)),
+            Block::FooterBlock { .. } => Ok((None, false)),
+        }
     }
 
     pub fn get_data_block(

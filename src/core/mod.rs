@@ -3,6 +3,7 @@ pub mod db;
 pub mod db_config;
 pub mod db_context;
 pub mod entry;
+pub mod manifest;
 pub mod memory_manager;
 pub mod memtable;
 pub mod skiplist;

@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, atomic};
 use std::thread::JoinHandle;
 
-use super::block_cache::{BlockCache, BlockCacheError};
+use super::block_cache::{BlockCache, BlockCacheError, FileBlockData};
 use super::db_context::DBContext;
 use super::entry::{Entry, LogEntry};
+use super::manifest::{Manifest, SSTableVersion};
 use super::memory_manager::MemoryManager;
 use super::memtable::{ImmutableMemtable, ImmutableMemtableError, Memtable, MemtableError};
 use super::sstable_builder::SSTableBuilder;
@@ -83,7 +84,7 @@ impl From<BlockCacheError> for DBError {
 #[derive(Clone)]
 struct ReadState {
     memtables: Vec<Arc<ImmutableMemtable>>,
-    sstable_version: SSTableVersion,
+    sstable_version: Arc<SSTableVersion>,
 }
 
 impl ReadState {
@@ -93,11 +94,6 @@ impl ReadState {
             sstable_version: self.sstable_version.clone(),
         }
     }
-}
-
-#[derive(Clone)]
-struct SSTableVersion {
-    memtables_flushed: HashSet<usize>,
 }
 
 pub struct DB {
@@ -110,26 +106,28 @@ pub struct DB {
 
 impl DB {
     pub fn new(config: DBConfig) -> DB {
+        panic!("under development");
+
         let db_context = Arc::new(DBContext::new(config));
         let memory = Arc::new(MemoryManager::new(db_context.clone()));
+
+        let wal = WAL::new();
+        let manifest = Manifest::new(db_context.clone());
+
         let db_backend = Arc::new(DBBackend {
             db_inner: Mutex::new(DBInner {
                 active_memtable: Arc::new(Memtable::new(db_context.clone(), memory.clone())),
                 read_state: Arc::new(ReadState {
                     memtables: Vec::new(),
-                    sstable_version: SSTableVersion {
-                        memtables_flushed: HashSet::new(),
-                    },
+                    sstable_version: manifest.sstable_version(),
                 }),
                 immutable_memtable_idx: atomic::AtomicUsize::new(0),
                 block_cache: BlockCache::new(db_context.clone(), memory.clone()),
-                manifest: Manifest {
-                    flushing_memtables: HashSet::new(),
-                },
+                manifest: Manifest::new(db_context.clone()),
                 memory: memory.clone(),
                 db_context: db_context.clone(),
             }),
-            wal: WAL::new(),
+            wal,
             db_context: db_context.clone(),
         });
         let db_backend_ref = db_backend.clone();
@@ -250,7 +248,8 @@ impl DBBackend {
             (mt.clone(), mt.id.clone())
         };
 
-        guard.manifest.flushing_memtables.insert(mt_id);
+        guard.manifest.add_flushing_memtable(mt_id);
+        drop(guard);
 
         // convert the immutable memtable to an sstable
         // and write the blocks to the block cache
@@ -265,22 +264,29 @@ impl DBBackend {
             db_backend.db_context.clone(),
             mt.clone(),
         );
-        let sstable_writer =
+        let mut sstable_writer =
             SSTableWriter::new(db_backend.db_context.clone(), sstable_builder, file_path)?;
 
+        // write the data to the sstable and the block cache
+        let mut block_id: u16 = 0;
         loop {
             let Some(block) = sstable_writer.next_block()? else {
                 break;
             };
-            guard.block_cache.add_data_block(block)?;
+            db_backend
+                .db_inner
+                .lock()?
+                .block_cache
+                .add_data_block(file_num, block_id, block)?;
+            block_id += 1;
         }
+
+        // write the file to the manifest and remove the flushing memtable reference
+        let mut guard = db_backend.db_inner.lock()?;
+        guard.manifest.finalize_flushing_memtable(mt_id, file_num);
 
         Ok(())
     }
-}
-
-struct Manifest {
-    flushing_memtables: HashSet<usize>,
 }
 
 struct DBInner {

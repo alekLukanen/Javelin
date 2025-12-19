@@ -8,9 +8,10 @@ pub struct DBConfig {
     memory_manager_max_memtable_memory_usage: usize,
 
     block_cache_num_shards: usize,
-
     data_dir: Option<String>,
     sstable_max_block_size: usize,
+
+    manifest_num_levels: usize,
 
     logging_enabled: bool,
 }
@@ -51,6 +52,10 @@ impl DBConfig {
         self.sstable_max_block_size.clone()
     }
 
+    pub fn manifest_num_levels(&self) -> usize {
+        self.manifest_num_levels.clone()
+    }
+
     pub fn logging_enabled(&self) -> bool {
         self.logging_enabled
     }
@@ -72,6 +77,7 @@ impl DBConfigBuilder {
                 block_cache_num_shards: 3,
                 logging_enabled: false,
                 data_dir: None,
+                manifest_num_levels: 3,
                 sstable_max_block_size: 2 << 14,
             },
         }
@@ -123,6 +129,11 @@ impl DBConfigBuilder {
 
     pub fn sstable_max_block_size(mut self, val: usize) -> DBConfigBuilder {
         self.config.sstable_max_block_size = val;
+        self
+    }
+
+    pub fn manifest_num_levels(mut self, val: usize) -> DBConfigBuilder {
+        self.config.manifest_num_levels = val;
         self
     }
 

@@ -50,6 +50,24 @@ pub enum Block {
     },
 }
 
+impl Block {
+    pub fn size(&self) -> usize {
+        match self {
+            Self::DataBlock { keys, restarts, .. } => {
+                keys.iter().map(|item| item.size()).sum::<usize>() + 8 + restarts.len() * 4
+            }
+            Self::IndexBlock { keys, restarts, .. } => {
+                keys.iter().map(|item| item.size()).sum::<usize>() + 8 + restarts.len() * 4
+            }
+            Self::FooterBlock {
+                data_block_handle,
+                index_block_handle,
+                ..
+            } => 8 + data_block_handle.size() + index_block_handle.size(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct PrefixCompressedEntry {
     pub(crate) shared_len: u32,
