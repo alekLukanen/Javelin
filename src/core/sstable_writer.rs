@@ -92,7 +92,10 @@ impl SSTableWriter {
                     self.returned_footer_block = true;
                     Ok(Some(footer_block))
                 }
-                _ => Ok(None),
+                _ => {
+                    self.file.sync_all()?;
+                    Ok(None)
+                }
             },
         }
     }

@@ -106,8 +106,6 @@ pub struct DB {
 
 impl DB {
     pub fn new(config: DBConfig) -> DB {
-        panic!("under development");
-
         let db_context = Arc::new(DBContext::new(config));
         let memory = Arc::new(MemoryManager::new(db_context.clone()));
 
@@ -224,7 +222,7 @@ impl DBBackend {
     fn maintainer(db_backend: Arc<DBBackend>) -> Result<(), DBError> {
         loop {
             // check for immutable memtables to flush
-
+            /*
             match Self::flush_immutable_memtable(&db_backend) {
                 Ok(_) => {}
                 Err(err) => {
@@ -233,6 +231,7 @@ impl DBBackend {
                         .log_error(format!("[DBBackend-maintainer] {:?}", err));
                 }
             }
+            */
 
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
@@ -253,19 +252,20 @@ impl DBBackend {
 
         // convert the immutable memtable to an sstable
         // and write the blocks to the block cache
-
         let file_num = db_backend.wal.incr_file_sequence_num();
 
         let mut file_path = PathBuf::new();
         file_path.push(db_backend.db_context.config().data_dir());
         file_path.push(format!("{}.dat", file_num));
 
-        let sstable_builder = SSTableBuilder::build_from_immutable_memtable(
+        let mut sstable_writer = SSTableWriter::new(
             db_backend.db_context.clone(),
-            mt.clone(),
-        );
-        let mut sstable_writer =
-            SSTableWriter::new(db_backend.db_context.clone(), sstable_builder, file_path)?;
+            SSTableBuilder::build_from_immutable_memtable(
+                db_backend.db_context.clone(),
+                mt.clone(),
+            ),
+            file_path,
+        )?;
 
         // write the data to the sstable and the block cache
         let mut block_id: u16 = 0;
@@ -278,6 +278,9 @@ impl DBBackend {
                 .lock()?
                 .block_cache
                 .add_data_block(file_num, block_id, block)?;
+            if block_id == std::u16::MAX {
+                todo!("handle max block id");
+            }
             block_id += 1;
         }
 

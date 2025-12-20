@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 #[derive(Clone)]
 pub struct DBConfig {
     memtable_probability: f64,
@@ -8,7 +10,7 @@ pub struct DBConfig {
     memory_manager_max_memtable_memory_usage: usize,
 
     block_cache_num_shards: usize,
-    data_dir: Option<String>,
+    data_dir: Option<PathBuf>,
     sstable_max_block_size: usize,
 
     manifest_num_levels: usize,
@@ -41,7 +43,7 @@ impl DBConfig {
         self.block_cache_num_shards.clone()
     }
 
-    pub fn data_dir(&self) -> String {
+    pub fn data_dir(&self) -> PathBuf {
         match &self.data_dir {
             Some(data_dir) => data_dir.clone(),
             None => panic!("missing data_dir config value"),
@@ -122,7 +124,7 @@ impl DBConfigBuilder {
         self
     }
 
-    pub fn data_dir(mut self, data_dir: String) -> DBConfigBuilder {
+    pub fn data_dir(mut self, data_dir: PathBuf) -> DBConfigBuilder {
         self.config.data_dir = Some(data_dir);
         self
     }

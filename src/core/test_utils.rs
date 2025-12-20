@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fs, io, path::PathBuf, sync::Arc};
 
 use super::{
     db_config::{DBConfig, DBConfigBuilder},
@@ -23,6 +23,40 @@ impl TestContext {
         TestContext {
             db_context,
             memory_manager,
+        }
+    }
+
+    pub fn temp_dir() -> io::Result<TempDir> {
+        let sys_temp_dir = std::env::temp_dir();
+        let random_dir_name = format!("javelin-{}", fastrand::u64(0..std::u64::MAX));
+        let dir = sys_temp_dir.join(random_dir_name);
+
+        fs::create_dir(&dir)?;
+
+        Ok(TempDir { path: dir })
+    }
+}
+
+///////////////////////////////////////////////////////
+
+pub struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    pub fn dir(&self) -> PathBuf {
+        self.path.clone()
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        println!("dropping temp dir: {:?}", self.path);
+        match fs::remove_dir_all(&self.path) {
+            Ok(_) => {}
+            Err(err) => {
+                println!("error: {:?}", err);
+            }
         }
     }
 }

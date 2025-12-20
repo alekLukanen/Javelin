@@ -18,4 +18,6 @@ mod test_skiplist;
 #[cfg(test)]
 mod test_sstable_builder;
 #[cfg(test)]
+mod test_sstable_writer;
+#[cfg(test)]
 mod test_utils;
