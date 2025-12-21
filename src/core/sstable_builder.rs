@@ -256,6 +256,7 @@ impl SSTableBuilder {
         let key = entry.entry.key();
         let value = entry.entry.value();
         let id = entry.entry.id();
+
         let mut trailer = entry.log_seq_num.to_le_bytes().to_vec();
         trailer.push(id.to_le());
 
@@ -279,12 +280,15 @@ impl SSTableBuilder {
     ) -> PrefixCompressedEntry {
         let value = handle.value();
 
-        let shared_len = shared_prefix_len(key, previous_key);
-        let suffix = compute_suffix(key, shared_len, &[]);
+        let user_key = key[..key.len() - 9].to_vec();
+        let trailer = key[key.len() - 9..].to_vec();
+
+        let shared_len = shared_prefix_len(&user_key, previous_key);
+        let suffix = compute_suffix(&user_key, shared_len, &trailer);
 
         PrefixCompressedEntry {
             shared_len: shared_len as u32,
-            unshared_len: (key.len() - shared_len) as u32,
+            unshared_len: (user_key.len() - shared_len) as u32,
             value_len: value.len() as u32,
             key_suffix: suffix,
             value,

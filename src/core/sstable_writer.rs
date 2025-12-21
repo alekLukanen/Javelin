@@ -107,6 +107,7 @@ impl SSTableWriter {
                 keys_len,
                 restarts,
             } => {
+                self.db_context.log_info("writing data block".to_string());
                 let size = self.write_data_or_index_block(keys, keys_len, restarts)?;
                 self.data_size += size;
                 self.index_block_entries.push((
@@ -123,6 +124,7 @@ impl SSTableWriter {
                 keys_len,
                 restarts,
             } => {
+                self.db_context.log_info("writing index block".to_string());
                 let size = self.write_data_or_index_block(keys, keys_len, restarts)?;
                 self.index_size += size;
                 Ok(())
@@ -132,6 +134,7 @@ impl SSTableWriter {
                 data_block_handle,
                 index_block_handle,
             } => {
+                self.db_context.log_info("writing footer block".to_string());
                 self.write_footer_block(magic, data_block_handle, index_block_handle)?;
                 Ok(())
             }
@@ -169,19 +172,27 @@ impl SSTableWriter {
         keys_len: &u64,
         restarts: &Vec<u32>,
     ) -> Result<usize, SSTableWriterError> {
-        let size = keys.iter().map(|key| key.size()).sum::<usize>() + restarts.len() * 4 + 4 + 1;
+        let size =
+            8 + keys.iter().map(|key| key.size()).sum::<usize>() + restarts.len() * 4 + 4 + 1;
 
         let mut data: Vec<u8> = Vec::with_capacity(size);
 
         // write the data section
         data.extend_from_slice(&keys_len.to_le_bytes());
         for entry in keys {
+            self.db_context.log_info(format!("entry: {:?}", entry));
             data.extend_from_slice(&entry.shared_len.to_le_bytes());
             data.extend_from_slice(&entry.unshared_len.to_le_bytes());
             data.extend_from_slice(&entry.value_len.to_le_bytes());
             data.extend_from_slice(&entry.key_suffix);
             data.extend_from_slice(&entry.value);
         }
+
+        self.db_context.log_info(format!(
+            "data.len() = {}, expected size = {}",
+            data.len(),
+            8 + keys.iter().map(|key| key.size()).sum::<usize>()
+        ));
 
         // write the restarts section
         for restart in restarts {

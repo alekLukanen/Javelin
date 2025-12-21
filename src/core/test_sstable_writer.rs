@@ -1,4 +1,4 @@
-use std::{error::Error, sync::Arc};
+use std::{error::Error, path::PathBuf, sync::Arc};
 
 use crate::core::{
     db_config::DBConfigBuilder,
@@ -40,10 +40,12 @@ fn test_simple_case_sstable_writer() -> Result<(), Box<dyn Error>> {
     let immuitable_memtable = Arc::new(ImmutableMemtable::new(0, tc.db_context.clone(), table)?);
 
     // create the table writer
+    let mut sstable_path = PathBuf::from(temp_dir.dir());
+    sstable_path.push("sstable-simple.dat");
     let mut sstable_writer = SSTableWriter::new(
         tc.db_context.clone(),
         SSTableBuilder::build_from_immutable_memtable(tc.db_context.clone(), immuitable_memtable),
-        temp_dir.dir(),
+        sstable_path,
     )?;
 
     let mut blocks: Vec<Block> = Vec::new();
@@ -53,7 +55,7 @@ fn test_simple_case_sstable_writer() -> Result<(), Box<dyn Error>> {
         };
         blocks.push(block);
     }
-    assert_eq!(1, blocks.len());
+    assert_eq!(3, blocks.len());
 
     Ok(())
 }
