@@ -13,10 +13,6 @@ use crate::core::{
 fn test_simple_case_sstable_writer() -> Result<(), Box<dyn Error>> {
     let temp_dir = TestContext::temp_dir()?;
 
-    println!("dir: {:?}", temp_dir.dir());
-
-    return Ok(());
-
     let config = DBConfigBuilder::new()
         .sstable_max_block_size(10_000)
         .data_dir(temp_dir.dir())
@@ -44,11 +40,19 @@ fn test_simple_case_sstable_writer() -> Result<(), Box<dyn Error>> {
     let immuitable_memtable = Arc::new(ImmutableMemtable::new(0, tc.db_context.clone(), table)?);
 
     // create the table writer
-    let sstable_bldr =
-        SSTableBuilder::build_from_immutable_memtable(tc.db_context.clone(), immuitable_memtable);
-    let sstable_writer = SSTableWriter::new(tc.db_context.clone(), sstable_bldr, temp_dir.dir())?;
+    let mut sstable_writer = SSTableWriter::new(
+        tc.db_context.clone(),
+        SSTableBuilder::build_from_immutable_memtable(tc.db_context.clone(), immuitable_memtable),
+        temp_dir.dir(),
+    )?;
 
-    let blocks: Vec<Block> = sstable_bldr.collect();
+    let mut blocks: Vec<Block> = Vec::new();
+    loop {
+        let Some(block) = sstable_writer.next_block()? else {
+            break;
+        };
+        blocks.push(block);
+    }
     assert_eq!(1, blocks.len());
 
     Ok(())

@@ -27,9 +27,7 @@ impl TestContext {
     }
 
     pub fn temp_dir() -> io::Result<TempDir> {
-        let sys_temp_dir = std::env::temp_dir();
-        let random_dir_name = format!("javelin-{}", fastrand::u64(0..std::u64::MAX));
-        let dir = sys_temp_dir.join(random_dir_name);
+        let dir = std::env::temp_dir().join(format!("javelin-{}", fastrand::u64(0..std::u64::MAX)));
 
         fs::create_dir(&dir)?;
 
