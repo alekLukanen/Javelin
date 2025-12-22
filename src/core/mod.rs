@@ -1,4 +1,5 @@
 pub mod block_cache;
+pub mod buf_utils;
 pub mod db;
 pub mod db_config;
 pub mod db_context;
