@@ -16,9 +16,10 @@ impl Compression {
     }
 }
 
+#[derive(Clone)]
 pub struct BlockHandle {
-    offset: u64,
-    size: u64,
+    pub(crate) offset: u64,
+    pub(crate) size: u64,
 }
 
 impl BlockHandle {
@@ -32,43 +33,63 @@ impl BlockHandle {
     }
 }
 
+#[derive(Clone)]
+pub struct DataBlock {
+    pub(crate) keys: Vec<PrefixCompressedEntry>,
+    pub(crate) keys_len: u64,
+    pub(crate) restarts: Vec<u32>,
+}
+
+#[derive(Clone)]
+pub struct IndexBlock {
+    pub(crate) keys: Vec<PrefixCompressedEntry>,
+    pub(crate) keys_len: u64,
+    pub(crate) restarts: Vec<u32>,
+}
+
+#[derive(Clone)]
+pub struct FooterBlock {
+    pub(crate) magic: u64,
+    pub(crate) data_block_handle: BlockHandle,
+    pub(crate) index_block_handle: BlockHandle,
+}
+
+#[derive(Clone)]
 pub enum Block {
-    DataBlock {
-        keys: Vec<PrefixCompressedEntry>,
-        keys_len: u64,
-        restarts: Vec<u32>,
-    },
-    IndexBlock {
-        keys: Vec<PrefixCompressedEntry>,
-        keys_len: u64,
-        restarts: Vec<u32>,
-    },
-    FooterBlock {
-        magic: u64,
-        data_block_handle: BlockHandle,
-        index_block_handle: BlockHandle,
-    },
+    DataBlock(DataBlock),
+    IndexBlock(IndexBlock),
+    FooterBlock(FooterBlock),
 }
 
 impl Block {
     pub fn size(&self) -> usize {
         match self {
-            Self::DataBlock { keys, restarts, .. } => {
-                keys.iter().map(|item| item.size()).sum::<usize>() + 8 + restarts.len() * 4
+            Self::DataBlock(data_block) => {
+                data_block
+                    .keys
+                    .iter()
+                    .map(|item| item.size())
+                    .sum::<usize>()
+                    + 8
+                    + data_block.restarts.len() * 4
             }
-            Self::IndexBlock { keys, restarts, .. } => {
-                keys.iter().map(|item| item.size()).sum::<usize>() + 8 + restarts.len() * 4
+            Self::IndexBlock(index_block) => {
+                index_block
+                    .keys
+                    .iter()
+                    .map(|item| item.size())
+                    .sum::<usize>()
+                    + 8
+                    + index_block.restarts.len() * 4
             }
-            Self::FooterBlock {
-                data_block_handle,
-                index_block_handle,
-                ..
-            } => 8 + data_block_handle.size() + index_block_handle.size(),
+            Self::FooterBlock(footer_block) => {
+                8 + footer_block.data_block_handle.size() + footer_block.index_block_handle.size()
+            }
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PrefixCompressedEntry {
     pub(crate) shared_len: u32,
     pub(crate) unshared_len: u32,
@@ -163,11 +184,11 @@ impl SSTableBuilder {
                 .iter()
                 .map(|item| item.size())
                 .sum::<usize>() as u64;
-            let data_block = Block::DataBlock {
+            let data_block = Block::DataBlock(DataBlock {
                 keys: compressed_entries,
                 keys_len,
                 restarts: restart_offsets,
-            };
+            });
             Some(data_block)
         } else {
             None
@@ -227,15 +248,15 @@ impl SSTableBuilder {
             .iter()
             .map(|item| item.size())
             .sum::<usize>() as u64;
-        Block::IndexBlock {
+        Block::IndexBlock(IndexBlock {
             keys: compressed_entries,
             keys_len,
             restarts: restart_offsets,
-        }
+        })
     }
 
     pub fn footer(&self, data_size: usize, index_size: usize) -> Block {
-        Block::FooterBlock {
+        Block::FooterBlock(FooterBlock {
             magic: 69,
             data_block_handle: BlockHandle {
                 offset: 0,
@@ -245,7 +266,7 @@ impl SSTableBuilder {
                 offset: data_size as u64,
                 size: index_size as u64,
             },
-        }
+        })
     }
 
     #[inline]

@@ -55,6 +55,11 @@ fn test_simple_case_sstable_writer() -> Result<(), Box<dyn Error>> {
         };
         blocks.push(block);
     }
+
+    // blocks
+    // - data
+    // - index
+    // - footer
     assert_eq!(3, blocks.len());
 
     Ok(())

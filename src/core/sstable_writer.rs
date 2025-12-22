@@ -102,16 +102,18 @@ impl SSTableWriter {
 
     fn write_block(&mut self, block: &Block) -> Result<(), SSTableWriterError> {
         match block {
-            Block::DataBlock {
-                keys,
-                keys_len,
-                restarts,
-            } => {
+            Block::DataBlock(data_block) => {
                 self.db_context.log_info("writing data block".to_string());
-                let size = self.write_data_or_index_block(keys, keys_len, restarts)?;
+                let size = self.write_data_or_index_block(
+                    &data_block.keys,
+                    &data_block.keys_len,
+                    &data_block.restarts,
+                )?;
                 self.data_size += size;
                 self.index_block_entries.push((
-                    keys.first()
+                    data_block
+                        .keys
+                        .first()
                         .expect("expected at least one key")
                         .key_suffix
                         .clone(),
@@ -119,23 +121,23 @@ impl SSTableWriter {
                 ));
                 Ok(())
             }
-            Block::IndexBlock {
-                keys,
-                keys_len,
-                restarts,
-            } => {
+            Block::IndexBlock(index_block) => {
                 self.db_context.log_info("writing index block".to_string());
-                let size = self.write_data_or_index_block(keys, keys_len, restarts)?;
+                let size = self.write_data_or_index_block(
+                    &index_block.keys,
+                    &index_block.keys_len,
+                    &index_block.restarts,
+                )?;
                 self.index_size += size;
                 Ok(())
             }
-            Block::FooterBlock {
-                magic,
-                data_block_handle,
-                index_block_handle,
-            } => {
+            Block::FooterBlock(footer_block) => {
                 self.db_context.log_info("writing footer block".to_string());
-                self.write_footer_block(magic, data_block_handle, index_block_handle)?;
+                self.write_footer_block(
+                    &footer_block.magic,
+                    &footer_block.data_block_handle,
+                    &footer_block.index_block_handle,
+                )?;
                 Ok(())
             }
         }

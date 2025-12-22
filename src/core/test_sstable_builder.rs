@@ -45,11 +45,9 @@ fn test_build_from_immutable_memtable() -> Result<(), Box<dyn Error>> {
     // validate the values
     let (data_block_keys, data_block_keys_len, data_block_restarts) =
         match blocks.get(0).expect("expected block") {
-            Block::DataBlock {
-                keys,
-                keys_len,
-                restarts,
-            } => (keys, keys_len, restarts),
+            Block::DataBlock(data_block) => {
+                (&data_block.keys, &data_block.keys_len, &data_block.restarts)
+            }
             _ => panic!("expected first block to be a data block"),
         };
 

@@ -1,11 +1,10 @@
-use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::Display;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, atomic};
 use std::thread::JoinHandle;
 
-use super::block_cache::{BlockCache, BlockCacheError, FileBlockData};
+use super::block_cache::{BlockCache, BlockCacheError};
 use super::db_context::DBContext;
 use super::entry::{Entry, LogEntry};
 use super::manifest::{Manifest, SSTableVersion};
