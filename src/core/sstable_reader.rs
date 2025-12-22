@@ -1,4 +1,5 @@
-use std::io::{self, Read};
+use std::io::prelude::*;
+use std::io::{self, Cursor, Read, SeekFrom};
 use std::{error::Error, fmt::Display, fs::File, path::PathBuf, sync::Arc};
 
 use crc::{CRC_32_CKSUM, Crc};
@@ -96,15 +97,18 @@ impl SSTableReader {
         if file_len < header_size {
             return Err(SSTableReaderError::FileTooSmallForHeader(file_len));
         }
+        self.file.seek(SeekFrom::Start(start_pos))?;
 
         let mut buf: Vec<u8> = Vec::with_capacity(header_size as usize);
         self.file.read_to_end(&mut buf)?;
 
+        let mut cursor = Cursor::new(&buf[..]);
+
         // decode the header data into the header block
-        let magic: u64 = u64::from_le_bytes(buf[0..8].try_into().expect("incorrect magic length"));
-        let data_block_handle = Self::read_handle(&buf, 8);
-        let index_block_handle = Self::read_handle(&buf, 24);
-        let crc32 = u32::from_le_bytes(buf[40..44].try_into().expect("crc32 length"));
+        let magic: u64 = Self::read_u64(&mut cursor)?;
+        let data_block_handle = Self::read_handle(&mut cursor)?;
+        let index_block_handle = Self::read_handle(&mut cursor)?;
+        let crc32 = Self::read_u32(&mut cursor)?;
         let _: u8 = buf[45];
 
         let valid_crc32 = CRC32.checksum(&buf[0..40]);
@@ -122,17 +126,23 @@ impl SSTableReader {
     }
 
     #[inline]
-    fn read_handle(buf: &Vec<u8>, start_pos: usize) -> BlockHandle {
-        let offset: u64 = u64::from_le_bytes(
-            buf[start_pos..start_pos + 8]
-                .try_into()
-                .expect("incorrect block offset length"),
-        );
-        let size: u64 = u64::from_le_bytes(
-            buf[start_pos + 8..start_pos + 16]
-                .try_into()
-                .expect("incorrect block size length"),
-        );
-        BlockHandle { offset, size }
+    fn read_handle(cursor: &mut Cursor<&[u8]>) -> Result<BlockHandle, SSTableReaderError> {
+        let offset: u64 = Self::read_u64(cursor)?;
+        let size: u64 = Self::read_u64(cursor)?;
+        Ok(BlockHandle { offset, size })
+    }
+
+    #[inline]
+    fn read_u32(cursor: &mut Cursor<&[u8]>) -> Result<u32, SSTableReaderError> {
+        let mut buf = [0u8; 4];
+        cursor.read_exact(&mut buf)?;
+        Ok(u32::from_le_bytes(buf))
+    }
+
+    #[inline]
+    fn read_u64(cursor: &mut Cursor<&[u8]>) -> Result<u64, SSTableReaderError> {
+        let mut buf = [0u8; 8];
+        cursor.read_exact(&mut buf)?;
+        Ok(u64::from_le_bytes(buf))
     }
 }
