@@ -16,6 +16,7 @@ pub struct DBConfig {
     manifest_num_levels: usize,
 
     logging_enabled: bool,
+    debug_logging_enabled: bool,
 }
 
 impl DBConfig {
@@ -61,6 +62,10 @@ impl DBConfig {
     pub fn logging_enabled(&self) -> bool {
         self.logging_enabled
     }
+
+    pub fn debug_logging_enabled(&self) -> bool {
+        self.debug_logging_enabled
+    }
 }
 
 pub struct DBConfigBuilder {
@@ -78,6 +83,7 @@ impl DBConfigBuilder {
                 memory_manager_max_memtable_memory_usage: 10 * (1 << 20),
                 block_cache_num_shards: 3,
                 logging_enabled: false,
+                debug_logging_enabled: false,
                 data_dir: None,
                 manifest_num_levels: 3,
                 sstable_max_block_size: 2 << 14,
@@ -141,6 +147,11 @@ impl DBConfigBuilder {
 
     pub fn logging_enabled(mut self, val: bool) -> DBConfigBuilder {
         self.config.logging_enabled = val;
+        self
+    }
+
+    pub fn debug_logging_eanbled(mut self, val: bool) -> DBConfigBuilder {
+        self.config.debug_logging_enabled = val;
         self
     }
 }

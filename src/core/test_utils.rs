@@ -13,7 +13,10 @@ pub struct TestContext {
 
 impl TestContext {
     pub fn new() -> TestContext {
-        let config = DBConfigBuilder::new().build();
+        let config = DBConfigBuilder::new()
+            .logging_enabled(true)
+            .debug_logging_eanbled(true)
+            .build();
         Self::new_from_config(config)
     }
 

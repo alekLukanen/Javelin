@@ -103,12 +103,9 @@ impl SSTableWriter {
     fn write_block(&mut self, block: &Block) -> Result<(), SSTableWriterError> {
         match block {
             Block::DataBlock(data_block) => {
-                self.db_context.log_info("writing data block".to_string());
-                let size = self.write_data_or_index_block(
-                    &data_block.keys,
-                    &data_block.keys_len,
-                    &data_block.restarts,
-                )?;
+                self.db_context.log_debug("writing data block".to_string());
+                let size =
+                    self.write_data_or_index_block(&data_block.keys, &data_block.restarts)?;
                 self.data_size += size;
                 self.index_block_entries.push((
                     data_block
@@ -122,17 +119,15 @@ impl SSTableWriter {
                 Ok(())
             }
             Block::IndexBlock(index_block) => {
-                self.db_context.log_info("writing index block".to_string());
-                let size = self.write_data_or_index_block(
-                    &index_block.keys,
-                    &index_block.keys_len,
-                    &index_block.restarts,
-                )?;
-                self.index_size += size;
+                self.db_context.log_debug("writing index block".to_string());
+                let size =
+                    self.write_data_or_index_block(&index_block.keys, &index_block.restarts)?;
+                self.index_size = size;
                 Ok(())
             }
             Block::FooterBlock(footer_block) => {
-                self.db_context.log_info("writing footer block".to_string());
+                self.db_context
+                    .log_debug("writing footer block".to_string());
                 self.write_footer_block(
                     &footer_block.magic,
                     &footer_block.data_block_handle,
@@ -171,30 +166,23 @@ impl SSTableWriter {
     fn write_data_or_index_block(
         &mut self,
         keys: &Vec<PrefixCompressedEntry>,
-        keys_len: &u64,
         restarts: &Vec<u32>,
     ) -> Result<usize, SSTableWriterError> {
-        let size =
-            8 + keys.iter().map(|key| key.size()).sum::<usize>() + restarts.len() * 4 + 4 + 1;
+        let keys_len = keys.iter().map(|key| key.size() as u64).sum::<u64>();
+        let size = 8 + keys_len as usize + restarts.len() * 4 + 4 + 1;
 
         let mut data: Vec<u8> = Vec::with_capacity(size);
 
         // write the data section
         data.extend_from_slice(&keys_len.to_le_bytes());
         for entry in keys {
-            self.db_context.log_info(format!("entry: {:?}", entry));
+            self.db_context.log_debug(format!("entry: {:?}", entry));
             data.extend_from_slice(&entry.shared_len.to_le_bytes());
             data.extend_from_slice(&entry.unshared_len.to_le_bytes());
             data.extend_from_slice(&entry.value_len.to_le_bytes());
             data.extend_from_slice(&entry.key_suffix);
             data.extend_from_slice(&entry.value);
         }
-
-        self.db_context.log_info(format!(
-            "data.len() = {}, expected size = {}",
-            data.len(),
-            8 + keys.iter().map(|key| key.size()).sum::<usize>()
-        ));
 
         // write the restarts section
         for restart in restarts {
@@ -207,6 +195,12 @@ impl SSTableWriter {
         data.push(compression);
 
         self.file.write_all(&data)?;
+
+        self.db_context.log_debug(format!(
+            "data.len() = {}, expected size = {}",
+            data.len(),
+            size,
+        ));
 
         assert_eq!(size, data.len());
 

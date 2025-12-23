@@ -16,7 +16,7 @@ impl Compression {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BlockHandle {
     pub(crate) offset: u64,
     pub(crate) size: u64,
@@ -33,28 +33,26 @@ impl BlockHandle {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DataBlock {
     pub(crate) keys: Vec<PrefixCompressedEntry>,
-    pub(crate) keys_len: u64,
     pub(crate) restarts: Vec<u32>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IndexBlock {
     pub(crate) keys: Vec<PrefixCompressedEntry>,
-    pub(crate) keys_len: u64,
     pub(crate) restarts: Vec<u32>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FooterBlock {
     pub(crate) magic: u64,
     pub(crate) data_block_handle: BlockHandle,
     pub(crate) index_block_handle: BlockHandle,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Block {
     DataBlock(DataBlock),
     IndexBlock(IndexBlock),
@@ -89,7 +87,7 @@ impl Block {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PrefixCompressedEntry {
     pub(crate) shared_len: u32,
     pub(crate) unshared_len: u32,
@@ -180,13 +178,8 @@ impl SSTableBuilder {
             restart_idx += 1;
         }
         if block_size != 0 {
-            let keys_len: u64 = compressed_entries
-                .iter()
-                .map(|item| item.size())
-                .sum::<usize>() as u64;
             let data_block = Block::DataBlock(DataBlock {
                 keys: compressed_entries,
-                keys_len,
                 restarts: restart_offsets,
             });
             Some(data_block)
@@ -244,13 +237,9 @@ impl SSTableBuilder {
             }
             restart_idx += 1;
         }
-        let keys_len: u64 = compressed_entries
-            .iter()
-            .map(|item| item.size())
-            .sum::<usize>() as u64;
+
         Block::IndexBlock(IndexBlock {
             keys: compressed_entries,
-            keys_len,
             restarts: restart_offsets,
         })
     }

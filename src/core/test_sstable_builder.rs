@@ -43,19 +43,10 @@ fn test_build_from_immutable_memtable() -> Result<(), Box<dyn Error>> {
     assert_eq!(1, blocks.len());
 
     // validate the values
-    let (data_block_keys, data_block_keys_len, data_block_restarts) =
-        match blocks.get(0).expect("expected block") {
-            Block::DataBlock(data_block) => {
-                (&data_block.keys, &data_block.keys_len, &data_block.restarts)
-            }
-            _ => panic!("expected first block to be a data block"),
-        };
-
-    let expected_keys_len: u64 = data_block_keys
-        .iter()
-        .map(|item| item.size())
-        .sum::<usize>() as u64;
-    assert_eq!(expected_keys_len, *data_block_keys_len);
+    let (data_block_keys, data_block_restarts) = match blocks.get(0).expect("expected block") {
+        Block::DataBlock(data_block) => (&data_block.keys, &data_block.restarts),
+        _ => panic!("expected first block to be a data block"),
+    };
 
     for (idx, pc_entry) in data_block_keys.iter().enumerate() {
         assert_eq!(

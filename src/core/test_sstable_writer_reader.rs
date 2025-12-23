@@ -5,6 +5,7 @@ use crate::core::{
     entry,
     memtable::{self, ImmutableMemtable},
     sstable_builder::{Block, SSTableBuilder},
+    sstable_reader::SSTableReader,
     sstable_writer::SSTableWriter,
     test_utils::TestContext,
 };
@@ -16,6 +17,8 @@ fn test_simple_case_sstable_writer() -> Result<(), Box<dyn Error>> {
     let config = DBConfigBuilder::new()
         .sstable_max_block_size(10_000)
         .data_dir(temp_dir.dir())
+        .logging_enabled(true)
+        .debug_logging_eanbled(true)
         .build();
     let tc = TestContext::new_from_config(config);
 
@@ -45,7 +48,7 @@ fn test_simple_case_sstable_writer() -> Result<(), Box<dyn Error>> {
     let mut sstable_writer = SSTableWriter::new(
         tc.db_context.clone(),
         SSTableBuilder::build_from_immutable_memtable(tc.db_context.clone(), immuitable_memtable),
-        sstable_path,
+        sstable_path.clone(),
     )?;
 
     let mut blocks: Vec<Block> = Vec::new();
@@ -56,11 +59,42 @@ fn test_simple_case_sstable_writer() -> Result<(), Box<dyn Error>> {
         blocks.push(block);
     }
 
+    // drop the writer to close the file
+    drop(sstable_writer);
+
     // blocks
     // - data
     // - index
     // - footer
     assert_eq!(3, blocks.len());
+
+    let expected_footer_block_data = match blocks
+        .iter()
+        .find(|item| matches!(item, Block::FooterBlock(_)))
+        .expect("footer block")
+    {
+        Block::FooterBlock(fb) => fb.clone(),
+        _ => panic!("not footer block"),
+    };
+    let expected_index_block_data = match blocks
+        .iter()
+        .find(|item| matches!(item, Block::IndexBlock(_)))
+        .expect("index block")
+    {
+        Block::IndexBlock(fb) => fb.clone(),
+        _ => panic!("not index block"),
+    };
+
+    // create the table reader
+    let mut sstable_reader = SSTableReader::new(tc.db_context.clone(), sstable_path.clone())?;
+
+    // read the footer block
+    let footer = sstable_reader.footer_block()?;
+    assert_eq!(expected_footer_block_data, footer);
+
+    // read the index block
+    let index = sstable_reader.index_block()?;
+    assert_eq!(expected_index_block_data, index);
 
     Ok(())
 }

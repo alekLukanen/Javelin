@@ -15,15 +15,26 @@ impl DBContext {
         &self.config
     }
 
-    pub fn log_info(&self, msg: String) {
-        if self.config.logging_enabled() {
+    pub fn log_debug(&self, msg: String) {
+        if !self.config.logging_enabled() || !self.config.debug_logging_enabled() {
             return;
         }
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        println!("[INFO  {}] {}", ts, msg);
+        println!("[DEBUG {}] {}", ts, msg);
+    }
+
+    pub fn log_info(&self, msg: String) {
+        if !self.config.logging_enabled() {
+            return;
+        }
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        println!("[INFO {}] {}", ts, msg);
     }
 
     pub fn log_error(&self, msg: String) {
