@@ -144,17 +144,18 @@ impl SSTableWriter {
         data_block_handle: &BlockHandle,
         index_block_handle: &BlockHandle,
     ) -> Result<usize, SSTableWriterError> {
-        let size = 8 + data_block_handle.size() + index_block_handle.size() + 4 + 1;
+        let size = 8 + data_block_handle.size() + index_block_handle.size() + 1 + 4;
         let mut data: Vec<u8> = Vec::with_capacity(size);
 
         data.extend_from_slice(&magic.to_le_bytes());
         data.extend_from_slice(&data_block_handle.value());
         data.extend_from_slice(&index_block_handle.value());
 
-        let crc32 = CRC32.checksum(&data);
         let compression = Compression::None.value();
-        data.extend_from_slice(&crc32.to_le_bytes());
         data.push(compression);
+
+        let crc32 = CRC32.checksum(&data);
+        data.extend_from_slice(&crc32.to_le_bytes());
 
         self.file.write_all(&data)?;
 
@@ -194,10 +195,11 @@ impl SSTableWriter {
             data.extend_from_slice(&restart.to_le_bytes());
         }
 
-        let crc32 = CRC32.checksum(&data);
         let compression = Compression::None.value();
-        data.extend_from_slice(&crc32.to_le_bytes());
         data.push(compression);
+
+        let crc32 = CRC32.checksum(&data);
+        data.extend_from_slice(&crc32.to_le_bytes());
 
         self.file.write_all(&data)?;
 

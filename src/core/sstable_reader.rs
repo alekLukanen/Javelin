@@ -196,7 +196,7 @@ impl SSTableReader {
             return Ok(footer_block.clone());
         }
 
-        let header_size: u64 = 8 + 16 + 16 + 4 + 1;
+        let header_size: u64 = 8 + 16 + 16 + 1 + 4;
 
         let file_len = self.file.metadata()?.len();
         let start_pos = file_len.saturating_sub(header_size);
@@ -214,14 +214,9 @@ impl SSTableReader {
         let magic: u64 = buf_utils::read_u64(&mut cursor)?;
         let data_block_handle = buf_utils::read_handle(&mut cursor)?;
         let index_block_handle = buf_utils::read_handle(&mut cursor)?;
-        let crc32 = buf_utils::read_u32(&mut cursor)?;
-        let _: u8 = buf_utils::read_u8(&mut cursor)?;
 
-        // validate data
-        let valid_crc32 = CRC32.checksum(&buf[0..40]);
-        if valid_crc32 != crc32 {
-            return Err(SSTableReaderError::InvalidCRC32(valid_crc32, crc32));
-        }
+        Self::valid_block_crc32(&buf)?;
+
         if magic != 69 {
             return Err(SSTableReaderError::InvalidMagic(69, magic));
         }
@@ -238,13 +233,12 @@ impl SSTableReader {
     #[inline]
     fn valid_block_crc32(buf: &Vec<u8>) -> Result<bool, SSTableReaderError> {
         let mut cursor = Cursor::new(&buf[..]);
-        cursor.set_position(buf.len() as u64 - 5);
+        cursor.set_position(buf.len() as u64 - 4);
 
         let crc32 = buf_utils::read_u32(&mut cursor)?;
-        let _: u8 = buf_utils::read_u8(&mut cursor)?;
 
         // validate data
-        let valid_crc32 = CRC32.checksum(&buf[0..(buf.len() - 5) as usize]);
+        let valid_crc32 = CRC32.checksum(&buf[0..(buf.len() - 4) as usize]);
         if valid_crc32 != crc32 {
             return Err(SSTableReaderError::InvalidCRC32(valid_crc32, crc32));
         }
