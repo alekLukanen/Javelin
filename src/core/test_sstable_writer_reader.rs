@@ -1,6 +1,7 @@
-use std::{error::Error, path::PathBuf, sync::Arc};
+use std::{error::Error, io::Cursor, path::PathBuf, sync::Arc};
 
 use crate::core::{
+    buf_utils,
     db_config::DBConfigBuilder,
     entry,
     memtable::{self, ImmutableMemtable},
@@ -11,7 +12,7 @@ use crate::core::{
 };
 
 #[test]
-fn test_simple_case_sstable_writer() -> Result<(), Box<dyn Error>> {
+fn test_simple_case_sstable_writer_and_reader() -> Result<(), Box<dyn Error>> {
     let temp_dir = TestContext::temp_dir()?;
 
     let config = DBConfigBuilder::new()
@@ -84,6 +85,14 @@ fn test_simple_case_sstable_writer() -> Result<(), Box<dyn Error>> {
         Block::IndexBlock(fb) => fb.clone(),
         _ => panic!("not index block"),
     };
+    let expected_data_block_data = match blocks
+        .iter()
+        .find(|item| matches!(item, Block::DataBlock(_)))
+        .expect("data block")
+    {
+        Block::DataBlock(fb) => fb.clone(),
+        _ => panic!("not data block"),
+    };
 
     // create the table reader
     let mut sstable_reader = SSTableReader::new(tc.db_context.clone(), sstable_path.clone())?;
@@ -95,6 +104,11 @@ fn test_simple_case_sstable_writer() -> Result<(), Box<dyn Error>> {
     // read the index block
     let index = sstable_reader.index_block()?;
     assert_eq!(expected_index_block_data, index);
+
+    // read the data block
+    let data_handle = buf_utils::read_handle(&mut Cursor::new(&index.keys.get(0).unwrap().value))?;
+    let data = sstable_reader.data_block(&data_handle)?;
+    assert_eq!(expected_data_block_data, data);
 
     Ok(())
 }

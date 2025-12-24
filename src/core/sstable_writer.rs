@@ -182,6 +182,11 @@ impl SSTableWriter {
             data.extend_from_slice(&entry.value_len.to_le_bytes());
             data.extend_from_slice(&entry.key_suffix);
             data.extend_from_slice(&entry.value);
+            self.db_context.log_debug(format!(
+                "data.len() = {}, keys_len = {}",
+                data.len(),
+                keys_len
+            ));
         }
 
         // write the restarts section

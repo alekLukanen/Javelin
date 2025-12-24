@@ -40,12 +40,6 @@ pub struct DataBlock {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct IndexBlock {
-    pub(crate) keys: Vec<PrefixCompressedEntry>,
-    pub(crate) restarts: Vec<u32>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct FooterBlock {
     pub(crate) magic: u64,
     pub(crate) data_block_handle: BlockHandle,
@@ -55,7 +49,7 @@ pub struct FooterBlock {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Block {
     DataBlock(DataBlock),
-    IndexBlock(IndexBlock),
+    IndexBlock(DataBlock),
     FooterBlock(FooterBlock),
 }
 
@@ -238,7 +232,7 @@ impl SSTableBuilder {
             restart_idx += 1;
         }
 
-        Block::IndexBlock(IndexBlock {
+        Block::IndexBlock(DataBlock {
             keys: compressed_entries,
             restarts: restart_offsets,
         })

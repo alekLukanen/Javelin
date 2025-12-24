@@ -5,8 +5,8 @@ use std::{error::Error, fmt::Display, fs::File, path::PathBuf, sync::Arc};
 use crc::{CRC_32_CKSUM, Crc};
 
 use crate::core::buf_utils;
-use crate::core::sstable_builder::{DataBlock, FooterBlock, IndexBlock, PrefixCompressedEntry};
-use crate::core::{db_context::DBContext, sstable_builder::Block};
+use crate::core::db_context::DBContext;
+use crate::core::sstable_builder::{BlockHandle, DataBlock, FooterBlock, PrefixCompressedEntry};
 
 const CRC32: Crc<u32> = Crc::<u32>::new(&CRC_32_CKSUM);
 
@@ -14,7 +14,7 @@ const CRC32: Crc<u32> = Crc::<u32>::new(&CRC_32_CKSUM);
 pub enum SSTableReaderError {
     IOError(io::Error),
     FileTooSmallForFooter(u64),
-    FileTooSmallForIndex(u64),
+    FileTooSmallForDataBlock(u64),
     InvalidMagic(u64, u64),
     InvalidCRC32(u32, u32),
     EntryMalformed(String),
@@ -27,8 +27,8 @@ impl Display for SSTableReaderError {
             Self::FileTooSmallForFooter(size) => {
                 write!(f, "FileTooSmallForFooter: file size={}", size)
             }
-            Self::FileTooSmallForIndex(size) => {
-                write!(f, "FileTooSmallForIndex: file size={}", size)
+            Self::FileTooSmallForDataBlock(size) => {
+                write!(f, "FileTooSmallForDatablock: file size={}", size)
             }
             Self::InvalidMagic(valid, magic) => {
                 write!(f, "InvalidMagic: valid={}, actual={}", valid, magic)
@@ -48,7 +48,7 @@ impl Error for SSTableReaderError {
         match self {
             Self::IOError(e) => Some(e),
             Self::FileTooSmallForFooter(_) => None,
-            Self::FileTooSmallForIndex(_) => None,
+            Self::FileTooSmallForDataBlock(_) => None,
             Self::InvalidMagic(_, _) => None,
             Self::InvalidCRC32(_, _) => None,
             Self::EntryMalformed(_) => None,
@@ -63,6 +63,11 @@ impl From<io::Error> for SSTableReaderError {
 }
 
 ///////////////////////////////////////////////////
+
+struct BlockContents {
+    keys: Vec<PrefixCompressedEntry>,
+    restarts: Vec<u32>,
+}
 
 pub struct SSTableReader {
     db_context: Arc<DBContext>,
@@ -85,13 +90,20 @@ impl SSTableReader {
         })
     }
 
-    pub fn index_block(&mut self) -> Result<IndexBlock, SSTableReaderError> {
+    pub fn index_block(&mut self) -> Result<DataBlock, SSTableReaderError> {
         let footer = self.footer_block()?;
 
+        self.data_block(&footer.index_block_handle)
+    }
+
+    pub fn data_block(
+        &mut self,
+        block_handle: &BlockHandle,
+    ) -> Result<DataBlock, SSTableReaderError> {
         let file_len = self.file.metadata()?.len();
-        let start_pos = footer.index_block_handle.offset;
-        if start_pos + footer.index_block_handle.size > file_len {
-            return Err(SSTableReaderError::FileTooSmallForIndex(file_len));
+        let start_pos = block_handle.offset;
+        if start_pos + block_handle.size > file_len {
+            return Err(SSTableReaderError::FileTooSmallForDataBlock(file_len));
         }
         self.file.seek(SeekFrom::Start(start_pos))?;
 
@@ -99,28 +111,25 @@ impl SSTableReader {
             .log_debug(format!("file_len={}, start_pos={}", file_len, start_pos));
 
         self.db_context.log_debug(format!(
-            "data_block.offset={}, data_block.size={}",
-            footer.data_block_handle.offset, footer.data_block_handle.size
-        ));
-        self.db_context.log_debug(format!(
-            "index_block.offset={}, index_block.size={}",
-            footer.index_block_handle.offset, footer.index_block_handle.size
+            "block_handle.offset={}, block_handle.size={}",
+            block_handle.offset, block_handle.size
         ));
 
         // load the entire block into the buffer
-        let buf = buf_utils::file_read_n(&mut self.file, footer.index_block_handle.size as usize)?;
+        let buf = buf_utils::file_read_n(&mut self.file, block_handle.size as usize)?;
         let mut cursor = Cursor::new(&buf[..]);
 
         let keys_len = buf_utils::read_u64(&mut cursor)?;
-        let block_size = footer.index_block_handle.size;
+        let block_size = block_handle.size;
 
+        // keys + keys len size
         let max_keys_pos = keys_len + 8;
+
+        // block size - crc32 and compression size
         let max_restarts_pos = block_size - 5;
 
         // parse the crc32 and compression
         Self::valid_block_crc32(&buf)?;
-
-        self.db_context.log_debug("read keys_len".to_string());
 
         // parse the entries
         let mut entries: Vec<PrefixCompressedEntry> = Vec::new();
@@ -130,18 +139,17 @@ impl SSTableReader {
             let value_len = buf_utils::read_u32(&mut cursor)?;
 
             self.db_context.log_debug(format!(
-                "shared_len={}, unshared_len={}, value_len={}, cursor.position()={}, keys_len={}",
+                "shared_len={}, unshared_len={}, value_len={}, cursor.position()={}, keys_len={}, max_keys_pos={}",
                 shared_len,
                 unshared_len,
                 value_len,
                 cursor.position(),
                 keys_len,
+                max_keys_pos,
             ));
 
             // validate the lengths
-            if (shared_len + unshared_len + 9 + value_len) as u64 + cursor.position()
-                > max_keys_pos as u64
-            {
+            if (unshared_len + 9 + value_len) as u64 + cursor.position() > max_keys_pos as u64 {
                 return Err(SSTableReaderError::EntryMalformed(
                     "prefix compressed entry length longer than cursor".to_string(),
                 ));
@@ -177,16 +185,9 @@ impl SSTableReader {
 
         assert_eq!(max_restarts_pos as u64, cursor.position());
 
-        Ok(IndexBlock {
+        Ok(DataBlock {
             keys: entries,
             restarts: restarts,
-        })
-    }
-
-    pub fn data_block(&mut self) -> Result<DataBlock, SSTableReaderError> {
-        Ok(DataBlock {
-            keys: Vec::new(),
-            restarts: Vec::new(),
         })
     }
 
