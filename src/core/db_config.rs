@@ -77,7 +77,7 @@ impl DBConfigBuilder {
         DBConfigBuilder {
             config: DBConfig {
                 memtable_probability: 0.5,
-                memtable_expected_num_keys: 10_000,
+                memtable_expected_num_keys: 50_000,
                 memtable_allowed_max_levels: 32,
                 memory_manager_max_memory_usage: 100 * (1 << 20),
                 memory_manager_max_memtable_memory_usage: 10 * (1 << 20),

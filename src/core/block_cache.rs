@@ -23,7 +23,7 @@ pub struct SSTable {
 
 pub struct FileBlockData {
     file_id: u64,
-    block_id: u16,
+    block_id: u32,
     block: Block,
 
     record: MemoryRecord,
@@ -51,8 +51,8 @@ pub struct CachedDataBlock {
 }
 
 pub struct BlockCacheShard {
-    data_blocks: BTreeMap<(u64, u16), Arc<CachedDataBlock>>,
-    lru_list: LinkedList<(u64, u16)>,
+    data_blocks: BTreeMap<(u64, u32), Arc<CachedDataBlock>>,
+    lru_list: LinkedList<(u64, u32)>,
 }
 
 impl BlockCacheShard {
@@ -66,7 +66,7 @@ impl BlockCacheShard {
     fn add_data_block(
         &mut self,
         file_id: u64,
-        block_id: u16,
+        block_id: u32,
         block: Block,
         record: MemoryRecord,
     ) -> (Option<BlockDataHandle>, bool) {
@@ -102,7 +102,7 @@ impl BlockCacheShard {
         }
     }
 
-    fn get_data_block(&mut self, file_id: u64, block_id: u16) -> Option<BlockDataHandle> {
+    fn get_data_block(&mut self, file_id: u64, block_id: u32) -> Option<BlockDataHandle> {
         let block = self.data_blocks.get(&(file_id, block_id));
         match block {
             Some(block) => Some(BlockDataHandle {
@@ -165,7 +165,7 @@ impl BlockCache {
     pub fn add_data_block(
         &self,
         file_id: u64,
-        block_id: u16,
+        block_id: u32,
         block: Block,
     ) -> Result<(Option<BlockDataHandle>, bool), BlockCacheError> {
         match block {
@@ -189,7 +189,7 @@ impl BlockCache {
     pub fn get_data_block(
         &self,
         file_id: u64,
-        block_id: u16,
+        block_id: u32,
     ) -> Result<Option<BlockDataHandle>, BlockCacheError> {
         let shard_idx = (file_id as usize) % self.inner.num_shards;
         let handle = self
@@ -232,7 +232,7 @@ impl BlockCacheInner {
             }
             let idx = self.maintain_idx.fetch_add(1, Ordering::Relaxed) % self.num_shards;
             let mut shard = self.shards.get(idx).expect("expected shard").lock()?;
-            let keys_to_delete: Vec<(u64, u16)> = shard
+            let keys_to_delete: Vec<(u64, u32)> = shard
                 .data_blocks
                 .iter()
                 .filter_map(|(key, block)| {

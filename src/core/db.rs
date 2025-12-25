@@ -14,6 +14,7 @@ use super::sstable_builder::SSTableBuilder;
 use super::sstable_writer::{SSTableWriter, SSTableWriterError};
 use super::wal::WAL;
 use crate::core::db_config::DBConfig;
+use crate::core::file_utils;
 
 #[derive(Debug)]
 pub enum DBError {
@@ -221,7 +222,6 @@ impl DBBackend {
     fn maintainer(db_backend: Arc<DBBackend>) -> Result<(), DBError> {
         loop {
             // check for immutable memtables to flush
-            /*
             match Self::flush_immutable_memtable(&db_backend) {
                 Ok(_) => {}
                 Err(err) => {
@@ -230,7 +230,6 @@ impl DBBackend {
                         .log_error(format!("[DBBackend-maintainer] {:?}", err));
                 }
             }
-            */
 
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
@@ -253,10 +252,12 @@ impl DBBackend {
         // and write the blocks to the block cache
         let file_num = db_backend.wal.incr_file_sequence_num();
 
-        let mut file_path = PathBuf::new();
-        file_path.push(db_backend.db_context.config().data_dir());
-        file_path.push(format!("{}.dat", file_num));
+        db_backend.db_context.log_debug(format!(
+            "flushing immutable memtables to sstable {}",
+            file_num
+        ));
 
+        let file_path = file_utils::sstable_path(db_backend.db_context.config(), file_num);
         let mut sstable_writer = SSTableWriter::new(
             db_backend.db_context.clone(),
             SSTableBuilder::build_from_immutable_memtable(
@@ -267,7 +268,7 @@ impl DBBackend {
         )?;
 
         // write the data to the sstable and the block cache
-        let mut block_id: u16 = 0;
+        let mut block_id: u32 = 0;
         loop {
             let Some(block) = sstable_writer.next_block()? else {
                 break;
@@ -277,7 +278,7 @@ impl DBBackend {
                 .lock()?
                 .block_cache
                 .add_data_block(file_num, block_id, block)?;
-            if block_id == std::u16::MAX {
+            if block_id == u32::MAX {
                 todo!("handle max block id");
             }
             block_id += 1;
@@ -286,6 +287,23 @@ impl DBBackend {
         // write the file to the manifest and remove the flushing memtable reference
         let mut guard = db_backend.db_inner.lock()?;
         guard.manifest.finalize_flushing_memtable(mt_id, file_num);
+
+        // update the read state with the new sstables versions and
+        // remove the flushed memtable
+        let mut read_state = guard.read_state.duplicate();
+        read_state.sstable_version = guard.manifest.sstable_version();
+
+        if let Some(pos) = read_state
+            .memtables
+            .iter()
+            .position(|item| item.id == mt_id)
+        {
+            read_state.memtables.remove(pos);
+        } else {
+            panic!("REMOVE MEMTABLE ERROR: memtable no long found in memtables vec!");
+        }
+
+        guard.read_state = Arc::new(read_state);
 
         Ok(())
     }
