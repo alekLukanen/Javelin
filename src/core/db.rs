@@ -1,6 +1,5 @@
 use std::error::Error;
 use std::fmt::Display;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, atomic};
 use std::thread::JoinHandle;
 
@@ -15,6 +14,7 @@ use super::sstable_writer::{SSTableWriter, SSTableWriterError};
 use super::wal::WAL;
 use crate::core::db_config::DBConfig;
 use crate::core::file_utils;
+use crate::core::memtable::MemtableIterator;
 
 #[derive(Debug)]
 pub enum DBError {

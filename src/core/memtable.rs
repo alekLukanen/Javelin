@@ -1,8 +1,6 @@
-use std::{
-    error::Error,
-    fmt::Display,
-    sync::{Arc, Mutex},
-};
+use std::{error::Error, fmt::Display, sync::Arc};
+
+use crate::core::iterator::{IteratorError, SourceIterator};
 
 use super::{
     db_context::DBContext,
@@ -50,7 +48,7 @@ impl From<MemoryRecordError> for MemtableError {
 }
 
 pub struct Memtable {
-    skip_list: Mutex<SkipList>,
+    skip_list: SkipList,
 
     memory_record: MemoryRecord,
 }
@@ -64,25 +62,27 @@ impl Memtable {
             true,
         );
         Memtable {
-            skip_list: Mutex::new(SkipList::new(
+            skip_list: SkipList::new(
                 db_context.config().memtable_probability(),
                 db_context.config().memtable_expected_num_keys(),
                 db_context.config().memtable_allowed_max_levels(),
-            )),
+            ),
             memory_record: record,
         }
     }
 
     pub fn copy_skip_list(&self) -> Result<SkipList, MemtableError> {
-        let guard = self.skip_list.lock()?;
-        Ok(guard.clone())
+        Ok(self.skip_list.clone())
+    }
+
+    pub fn skip_list_iter(&self) -> SkipListIter {
+        self.skip_list.iter()
     }
 
     pub fn insert(&self, log_entry: Arc<LogEntry>) -> Result<bool, MemtableError> {
         let allocated = self.memory_record.allocate(log_entry.size())?;
         if allocated {
-            let guard = self.skip_list.lock()?;
-            guard.insert(log_entry);
+            self.skip_list.insert(log_entry);
             Ok(true)
         } else {
             Ok(false)
@@ -94,8 +94,28 @@ impl Memtable {
         key: &Vec<u8>,
         log_seq_num: u64,
     ) -> Result<Option<Arc<LogEntry>>, MemtableError> {
-        let guard = self.skip_list.lock()?;
-        Ok(guard.get(key, log_seq_num))
+        Ok(self.skip_list.get(key, log_seq_num))
+    }
+}
+
+pub struct MemtableIterator {
+    memtable: Arc<Memtable>,
+    skip_list_iter: SkipListIter,
+}
+
+impl MemtableIterator {
+    pub fn new(memtable: Arc<Memtable>) -> MemtableIterator {
+        MemtableIterator {
+            memtable: memtable.clone(),
+            skip_list_iter: memtable.skip_list_iter(),
+        }
+    }
+}
+
+impl SourceIterator for MemtableIterator {
+    fn next(&mut self) -> Result<Option<Arc<LogEntry>>, IteratorError> {
+        let log_entry = self.skip_list_iter.next();
+        Ok(log_entry)
     }
 }
 
