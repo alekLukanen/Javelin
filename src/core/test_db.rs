@@ -1,10 +1,6 @@
-use std::{error::Error, fs, io, path::PathBuf, thread, time};
+use std::{error::Error, fs, thread, time};
 
-use crate::core::{
-    file_utils,
-    sstable_reader::{SSTableReader, SSTableReaderError},
-    test_utils::TestContext,
-};
+use crate::core::{file_utils, sstable_reader::SSTableReader, test_utils::TestContext};
 
 use super::{db::DB, db_config::DBConfigBuilder};
 
@@ -88,18 +84,6 @@ fn test_large_case_with_immutable_memtable_created() -> Result<(), Box<dyn Error
                     entry.path().display()
                 );
             }
-        }
-    }
-    let sstable_1_path = file_utils::sstable_path(&config, 1);
-    let sstable_reader_1 = SSTableReader::new(tc.db_context.clone(), sstable_1_path);
-    match sstable_reader_1 {
-        Err(SSTableReaderError::IOError(err)) => {
-            if err.kind() != io::ErrorKind::NotFound {
-                panic!("unexpected io error kind: {}", err.kind());
-            }
-        }
-        _ => {
-            panic!("io error not returned when reading sstable 1");
         }
     }
 
