@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LogEntry {
     pub(crate) entry: Entry,
@@ -22,6 +24,32 @@ impl Default for LogEntry {
         }
     }
 }
+
+impl Ord for LogEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.entry.key_ref().cmp(other.entry.key_ref()) {
+            Ordering::Equal => {
+                // Descending log sequence number
+                match other.log_seq_num.cmp(&self.log_seq_num) {
+                    Ordering::Equal => {
+                        // Optional final tie-breaker to guarantee total order
+                        self.entry.id().cmp(&other.entry.id())
+                    }
+                    ord => ord,
+                }
+            }
+            ord => ord,
+        }
+    }
+}
+
+impl PartialOrd for LogEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Eq for LogEntry {}
 
 /////////////////////////////////////////////
 
@@ -70,6 +98,14 @@ impl Entry {
             Self::Put { .. } => 1,
             Self::Del { .. } => 0,
             Self::Empty { .. } => 128,
+        }
+    }
+
+    pub fn key_ref(&self) -> &[u8] {
+        match self {
+            Self::Put { key, .. } => key,
+            Self::Del { key } => key,
+            Self::Empty => &[],
         }
     }
 }
