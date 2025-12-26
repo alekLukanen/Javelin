@@ -4,7 +4,7 @@ use super::db_context::DBContext;
 
 #[derive(Clone)]
 pub struct SSTableVersion {
-    sstable_levels: Vec<SSTableLevel>,
+    pub(crate) sstable_levels: Vec<SSTableLevel>,
 }
 
 impl SSTableVersion {
@@ -26,7 +26,7 @@ impl Default for SSTableVersion {
 /////////////////////////////////////////
 
 #[derive(Clone)]
-struct SSTableLevel {
+pub struct SSTableLevel {
     sstables: HashSet<u64>,
 }
 

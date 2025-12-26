@@ -1,4 +1,9 @@
-use std::{fs, io, path::PathBuf, sync::Arc};
+use std::{error::Error, fs, io, path::PathBuf, sync::Arc};
+
+use crate::core::{
+    entry::{Entry, LogEntry},
+    memtable::Memtable,
+};
 
 use super::{
     db_config::{DBConfig, DBConfigBuilder},
@@ -59,5 +64,67 @@ impl Drop for TempDir {
                 println!("error: {:?}", err);
             }
         }
+    }
+}
+
+///////////////////////////////////////////////////////
+// Create sample data
+
+pub(crate) enum SampleMemtableBuilder {
+    IncreasingPuts {
+        size: u64,
+        starting_value: u64,
+        starting_log_sequence_num: u64,
+    },
+    DecreasingPuts {
+        size: u64,
+        starting_value: u64,
+        starting_log_sequence_num: u64,
+    },
+}
+
+impl SampleMemtableBuilder {
+    pub(crate) fn build(&self, tc: &TestContext) -> Result<Arc<Memtable>, Box<dyn Error>> {
+        let table = Arc::new(Memtable::new(
+            tc.db_context.clone(),
+            tc.memory_manager.clone(),
+        ));
+
+        match self {
+            Self::IncreasingPuts {
+                size,
+                starting_value,
+                starting_log_sequence_num,
+            } => {
+                for i in *starting_value..*size as u64 {
+                    let key = i.to_be_bytes().to_vec();
+                    table.insert(Arc::new(LogEntry::new(
+                        Entry::Put {
+                            key: key.clone(),
+                            val: key.clone(),
+                        },
+                        starting_log_sequence_num + i,
+                    )))?;
+                }
+            }
+            Self::DecreasingPuts {
+                size,
+                starting_value,
+                starting_log_sequence_num,
+            } => {
+                for i in (*starting_value..*size as u64).rev() {
+                    let key = i.to_be_bytes().to_vec();
+                    table.insert(Arc::new(LogEntry::new(
+                        Entry::Put {
+                            key: key.clone(),
+                            val: key.clone(),
+                        },
+                        starting_log_sequence_num + i,
+                    )))?;
+                }
+            }
+        }
+
+        Ok(table)
     }
 }
