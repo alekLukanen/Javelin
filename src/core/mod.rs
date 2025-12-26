@@ -9,6 +9,7 @@ pub mod iterator;
 pub mod manifest;
 pub mod memory_manager;
 pub mod memtable;
+pub mod merge_sort_iterator;
 pub mod skiplist;
 pub mod sstable_builder;
 pub mod sstable_reader;

@@ -25,4 +25,5 @@ impl Error for IteratorError {
 
 pub trait SourceIterator {
     fn next(&mut self) -> Result<Option<Arc<LogEntry>>, IteratorError>;
+    fn current(&self) -> Option<Arc<LogEntry>>;
 }

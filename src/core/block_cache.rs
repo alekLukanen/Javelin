@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, LinkedList},
+    collections::{BTreeMap, HashMap, LinkedList},
     error::Error,
     fmt::Display,
     sync::{
@@ -7,6 +7,8 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
+
+use crate::core::sstable_builder::{DataBlock, FooterBlock};
 
 use super::{
     db_context::DBContext,
@@ -18,7 +20,8 @@ use super::{
 
 pub struct SSTable {
     id: u64,
-    index: Block,
+    footer: FooterBlock,
+    index: DataBlock,
 }
 
 pub struct FileBlockData {
@@ -129,6 +132,7 @@ impl BlockCache {
             memory_manager: memory_manager.clone(),
             db_context: db_context.clone(),
             close_called: AtomicBool::new(false),
+            sstables: Mutex::new(HashMap::new()),
             shards,
             num_shards,
             maintain_idx: AtomicUsize::new(0),
@@ -162,6 +166,23 @@ impl BlockCache {
         }
     }
 
+    pub fn add_sstable(
+        &self,
+        file_id: u64,
+        footer: FooterBlock,
+        index: DataBlock,
+    ) -> Result<(), BlockCacheError> {
+        self.inner.sstables.lock()?.insert(
+            file_id.clone(),
+            SSTable {
+                id: file_id,
+                footer,
+                index,
+            },
+        );
+        Ok(())
+    }
+
     pub fn add_data_block(
         &self,
         file_id: u64,
@@ -169,7 +190,7 @@ impl BlockCache {
         block: Block,
     ) -> Result<(Option<BlockDataHandle>, bool), BlockCacheError> {
         match block {
-            Block::DataBlock { .. } => {
+            Block::DataBlock(_) => {
                 let record = self.new_pre_allocated_record(block.size())?;
                 let shard_idx = (file_id as usize) % self.inner.num_shards;
                 let handle = self
@@ -181,8 +202,8 @@ impl BlockCache {
                     .add_data_block(file_id, block_id, block, record);
                 Ok(handle)
             }
-            Block::IndexBlock { .. } => Ok((None, false)),
-            Block::FooterBlock { .. } => Ok((None, false)),
+            Block::IndexBlock(_) => Ok((None, false)),
+            Block::FooterBlock(_) => Ok((None, false)),
         }
     }
 
@@ -217,6 +238,7 @@ pub struct BlockCacheInner {
     db_context: Arc<DBContext>,
 
     close_called: AtomicBool,
+    sstables: Mutex<HashMap<u64, SSTable>>,
     shards: Vec<Mutex<BlockCacheShard>>,
     num_shards: usize,
     maintain_idx: AtomicUsize,

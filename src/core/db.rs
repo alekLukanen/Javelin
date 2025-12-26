@@ -15,6 +15,7 @@ use super::wal::WAL;
 use crate::core::db_config::DBConfig;
 use crate::core::file_utils;
 use crate::core::memtable::MemtableIterator;
+use crate::core::sstable_builder::{Block, DataBlock, FooterBlock};
 
 #[derive(Debug)]
 pub enum DBError {
@@ -82,9 +83,9 @@ impl From<BlockCacheError> for DBError {
 ////////////////////////////////////////////
 
 #[derive(Clone)]
-struct ReadState {
-    memtables: Vec<Arc<ImmutableMemtable>>,
-    sstable_version: Arc<SSTableVersion>,
+pub struct ReadState {
+    pub(crate) memtables: Vec<Arc<ImmutableMemtable>>,
+    pub(crate) sstable_version: Arc<SSTableVersion>,
 }
 
 impl ReadState {
@@ -120,7 +121,7 @@ impl DB {
                     sstable_version: manifest.sstable_version(),
                 }),
                 immutable_memtable_idx: atomic::AtomicUsize::new(0),
-                block_cache: BlockCache::new(db_context.clone(), memory.clone()),
+                block_cache: Arc::new(BlockCache::new(db_context.clone(), memory.clone())),
                 manifest: Manifest::new(db_context.clone()),
                 memory: memory.clone(),
                 db_context: db_context.clone(),
@@ -269,20 +270,38 @@ impl DBBackend {
 
         // write the data to the sstable and the block cache
         let mut block_id: u32 = 0;
+        let mut index_block: Option<DataBlock> = None;
+        let mut footer_block: Option<FooterBlock> = None;
         loop {
-            let Some(block) = sstable_writer.next_block()? else {
-                break;
-            };
+            match sstable_writer.next_block()? {
+                Some(Block::IndexBlock(block)) => {
+                    index_block = Some(block);
+                }
+                Some(Block::FooterBlock(block)) => footer_block = Some(block),
+                None => {
+                    break;
+                }
+                _ => {}
+            }
+            /*
             db_backend
                 .db_inner
                 .lock()?
                 .block_cache
                 .add_data_block(file_num, block_id, block)?;
+            */
             if block_id == u32::MAX {
                 todo!("handle max block id");
             }
             block_id += 1;
         }
+
+        // write the file to the block cache
+        db_backend.db_inner.lock()?.block_cache.add_sstable(
+            file_num,
+            footer_block.unwrap(),
+            index_block.unwrap(),
+        )?;
 
         // write the file to the manifest and remove the flushing memtable reference
         let mut guard = db_backend.db_inner.lock()?;
@@ -313,7 +332,7 @@ struct DBInner {
     active_memtable: Arc<Memtable>,
     read_state: Arc<ReadState>,
     immutable_memtable_idx: atomic::AtomicUsize,
-    block_cache: BlockCache,
+    block_cache: Arc<BlockCache>,
 
     // maintainer state
     manifest: Manifest,

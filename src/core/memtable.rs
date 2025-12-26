@@ -101,6 +101,7 @@ impl Memtable {
 pub struct MemtableIterator {
     memtable: Arc<Memtable>,
     skip_list_iter: SkipListIter,
+    current_item: Option<Arc<LogEntry>>,
 }
 
 impl MemtableIterator {
@@ -108,6 +109,7 @@ impl MemtableIterator {
         MemtableIterator {
             memtable: memtable.clone(),
             skip_list_iter: memtable.skip_list_iter(),
+            current_item: None,
         }
     }
 }
@@ -115,7 +117,11 @@ impl MemtableIterator {
 impl SourceIterator for MemtableIterator {
     fn next(&mut self) -> Result<Option<Arc<LogEntry>>, IteratorError> {
         let log_entry = self.skip_list_iter.next();
+        self.current_item = log_entry.clone();
         Ok(log_entry)
+    }
+    fn current(&self) -> Option<Arc<LogEntry>> {
+        self.current_item.clone()
     }
 }
 
@@ -207,7 +213,34 @@ impl ImmutableMemtable {
         self.memory_record.size()
     }
 
-    pub fn iter(&self) -> SkipListIter {
+    pub fn skip_list_iter(&self) -> SkipListIter {
         self.skip_list.iter()
+    }
+}
+
+pub struct ImmutableMemtableIterator {
+    memtable: Arc<ImmutableMemtable>,
+    skip_list_iter: SkipListIter,
+    current_item: Option<Arc<LogEntry>>,
+}
+
+impl ImmutableMemtableIterator {
+    pub fn new(memtable: Arc<ImmutableMemtable>) -> ImmutableMemtableIterator {
+        ImmutableMemtableIterator {
+            memtable: memtable.clone(),
+            skip_list_iter: memtable.skip_list_iter(),
+            current_item: None,
+        }
+    }
+}
+
+impl SourceIterator for ImmutableMemtableIterator {
+    fn next(&mut self) -> Result<Option<Arc<LogEntry>>, IteratorError> {
+        let log_entry = self.skip_list_iter.next();
+        self.current_item = log_entry.clone();
+        Ok(log_entry)
+    }
+    fn current(&self) -> Option<Arc<LogEntry>> {
+        self.current_item.clone()
     }
 }

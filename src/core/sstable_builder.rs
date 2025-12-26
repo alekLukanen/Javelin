@@ -116,7 +116,7 @@ impl SSTableBuilder {
         SSTableBuilder {
             db_context,
             returned_index_block: false,
-            immutable_memtable: Some(memtable.iter()),
+            immutable_memtable: Some(memtable.skip_list_iter()),
             restart_segment_size: 8,
             max_block_size,
         }
