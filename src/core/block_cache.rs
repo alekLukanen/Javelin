@@ -20,8 +20,8 @@ use super::{
 
 pub struct SSTable {
     id: u64,
-    footer: FooterBlock,
-    index: DataBlock,
+    footer: Arc<FooterBlock>,
+    index: Arc<DataBlock>,
 }
 
 pub struct FileBlockData {
@@ -105,8 +105,8 @@ impl BlockCacheShard {
         }
     }
 
-    fn get_data_block(&mut self, file_id: u64, block_id: u32) -> Option<BlockDataHandle> {
-        let block = self.data_blocks.get(&(file_id, block_id));
+    fn get_data_block(&mut self, file_id: &u64, block_id: &u32) -> Option<BlockDataHandle> {
+        let block = self.data_blocks.get(&(*file_id, *block_id));
         match block {
             Some(block) => Some(BlockDataHandle {
                 entry: block.clone(),
@@ -176,8 +176,8 @@ impl BlockCache {
             file_id.clone(),
             SSTable {
                 id: file_id,
-                footer,
-                index,
+                footer: Arc::new(footer),
+                index: Arc::new(index),
             },
         );
         Ok(())
@@ -209,10 +209,10 @@ impl BlockCache {
 
     pub fn get_data_block(
         &self,
-        file_id: u64,
-        block_id: u32,
+        file_id: &u64,
+        block_id: &u32,
     ) -> Result<Option<BlockDataHandle>, BlockCacheError> {
-        let shard_idx = (file_id as usize) % self.inner.num_shards;
+        let shard_idx = (*file_id as usize) % self.inner.num_shards;
         let handle = self
             .inner
             .shards
@@ -221,6 +221,18 @@ impl BlockCache {
             .lock()?
             .get_data_block(file_id, block_id);
         Ok(handle)
+    }
+
+    pub fn get_index_block(
+        &self,
+        file_id: &u64,
+    ) -> Result<Option<Arc<DataBlock>>, BlockCacheError> {
+        let sstables_guard = self.inner.sstables.lock()?;
+        let sstable = sstables_guard.get(&file_id);
+        match sstable {
+            Some(sstable) => Ok(Some(sstable.index.clone())),
+            None => Ok(None),
+        }
     }
 
     fn new_pre_allocated_record(&self, size: usize) -> Result<MemoryRecord, BlockCacheError> {

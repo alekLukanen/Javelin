@@ -14,7 +14,8 @@ use super::sstable_writer::{SSTableWriter, SSTableWriterError};
 use super::wal::WAL;
 use crate::core::db_config::DBConfig;
 use crate::core::file_utils;
-use crate::core::memtable::MemtableIterator;
+use crate::core::iterator::{IteratorError, SourceIterator};
+use crate::core::merge_sort_iterator::MergeSortIterator;
 use crate::core::sstable_builder::{Block, DataBlock, FooterBlock};
 
 #[derive(Debug)]
@@ -24,6 +25,7 @@ pub enum DBError {
     SSTableWriterError(SSTableWriterError),
     BlockCacheError(BlockCacheError),
     MutexLockFailed(String),
+    IteratorError(IteratorError),
 }
 
 impl Display for DBError {
@@ -34,6 +36,7 @@ impl Display for DBError {
             DBError::SSTableWriterError(e) => write!(f, "SSTableWriterError: {}", e),
             DBError::BlockCacheError(e) => write!(f, "BlockCacheError: {}", e),
             DBError::MutexLockFailed(v) => write!(f, "MutexLockFailed: {}", v),
+            DBError::IteratorError(e) => write!(f, "IteratorError: {}", e),
         }
     }
 }
@@ -46,6 +49,7 @@ impl Error for DBError {
             DBError::SSTableWriterError(e) => Some(e),
             DBError::BlockCacheError(e) => Some(e),
             DBError::MutexLockFailed(_) => None,
+            DBError::IteratorError(e) => Some(e),
         }
     }
 }
@@ -77,6 +81,12 @@ impl From<SSTableWriterError> for DBError {
 impl From<BlockCacheError> for DBError {
     fn from(value: BlockCacheError) -> Self {
         DBError::BlockCacheError(value)
+    }
+}
+
+impl From<IteratorError> for DBError {
+    fn from(value: IteratorError) -> Self {
+        DBError::IteratorError(value)
     }
 }
 
@@ -157,32 +167,29 @@ impl DB {
 
         let inner_guard = self.db_backend.db_inner.lock()?;
 
-        let val = inner_guard.active_memtable.get(key, log_seq_num)?;
-        match val {
-            Some(val) => match &val.entry {
-                Entry::Put { val, .. } => return Ok(Some(val.clone())),
-                Entry::Del { .. } => return Ok(None),
-                Entry::Empty => return Ok(None),
-            },
-            None => {}
-        }
+        let active_memtable = inner_guard.active_memtable.clone();
+        let read_state = inner_guard.get_read_state();
+        let block_cache = inner_guard.block_cache.clone();
 
-        let immutable_memtables = &inner_guard.get_read_state().memtables;
         drop(inner_guard);
 
-        for memtable in immutable_memtables.iter().rev() {
-            let val = memtable.get(key, log_seq_num);
-            return match val {
-                Some(val) => match &val.entry {
-                    Entry::Put { val, .. } => Ok(Some(val.clone())),
-                    Entry::Del { .. } => Ok(None),
-                    Entry::Empty => Ok(None),
-                },
-                None => Ok(None),
-            };
-        }
+        let mut iter = MergeSortIterator::new(
+            active_memtable,
+            read_state,
+            block_cache,
+            log_seq_num,
+            Some(key.clone()),
+            Some(key.clone()),
+        );
 
-        Ok(None)
+        match SourceIterator::next(&mut iter)? {
+            Some(entry) => match &entry.entry {
+                Entry::Put { val, .. } => Ok(Some(val.clone())),
+                Entry::Del { .. } => Ok(None),
+                Entry::Empty => Ok(None),
+            },
+            None => Ok(None),
+        }
     }
 
     pub fn set(&self, key: Vec<u8>, val: Vec<u8>) -> Result<(), DBError> {

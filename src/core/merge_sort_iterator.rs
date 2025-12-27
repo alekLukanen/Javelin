@@ -40,9 +40,13 @@ pub struct MergeSortIterator {
     block_cache: Arc<BlockCache>,
 
     log_sequence_num: u64,
+    lower_bound: Option<Vec<u8>>,
+    upper_bound: Option<Vec<u8>>,
 
     memtable_iters: Vec<Box<dyn SourceIterator>>,
+
     sstable_level_iters: Vec<Box<dyn SourceIterator>>,
+    sstable_level_iters_loaded: Vec<bool>,
 
     current_entry: Option<Arc<LogEntry>>,
 }
@@ -53,6 +57,8 @@ impl MergeSortIterator {
         read_state: Arc<ReadState>,
         block_cache: Arc<BlockCache>,
         log_sequence_num: u64,
+        lower_bound: Option<Vec<u8>>,
+        upper_bound: Option<Vec<u8>>,
     ) -> MergeSortIterator {
         let active_memtable_iter =
             Box::new(MemtableIterator::new(active_memtable.clone())) as Box<dyn SourceIterator>;
@@ -68,13 +74,19 @@ impl MergeSortIterator {
         memtable_iters.push(active_memtable_iter);
         memtable_iters.extend(immutable_memtable_iters);
 
+        let sstable_level_iters_loaded =
+            vec![false; read_state.sstable_version.sstable_levels.len()];
+
         MergeSortIterator {
             read_state,
             block_cache,
             memtable_iters: memtable_iters,
             sstable_level_iters: Vec::new(),
+            sstable_level_iters_loaded,
             current_entry: None,
             log_sequence_num,
+            lower_bound,
+            upper_bound,
         }
     }
 
@@ -101,6 +113,32 @@ impl MergeSortIterator {
                         if entry.log_seq_num > self.log_sequence_num {
                             iter.next()?;
                             continue;
+                        }
+
+                        // ignore entries that come before the lower bound
+                        match &self.lower_bound {
+                            Some(lower_bound) => match entry.entry.key_ref().cmp(lower_bound) {
+                                Ordering::Equal => {}
+                                Ordering::Less => {
+                                    iter.next()?;
+                                    continue;
+                                }
+                                Ordering::Greater => {}
+                            },
+                            None => {}
+                        }
+
+                        // ignore entries that come after the upper bound
+                        match &self.upper_bound {
+                            Some(upper_bound) => match entry.entry.key_ref().cmp(upper_bound) {
+                                Ordering::Equal => {}
+                                Ordering::Less => {}
+                                Ordering::Greater => {
+                                    iter.next()?;
+                                    continue;
+                                }
+                            },
+                            None => {}
                         }
 
                         // ignore any entries that exist for the same key
@@ -142,6 +180,27 @@ impl MergeSortIterator {
                     }
                 }
             }
+        }
+
+        // exit early if this is a single item get
+        if self.upper_bound == self.lower_bound && primary_entry.is_some() {
+            // free up resources
+            self.memtable_iters = Vec::new();
+            self.sstable_level_iters = Vec::new();
+            self.sstable_level_iters_loaded = vec![true; self.sstable_level_iters_loaded.len()];
+
+            self.current_entry = primary_entry.clone();
+            return Ok(primary_entry);
+        } else if self.upper_bound == self.lower_bound
+            && self
+                .sstable_level_iters_loaded
+                .iter()
+                .filter(|item| **item == true)
+                .count()
+                == self.sstable_level_iters_loaded.len()
+        {
+            self.current_entry = primary_entry.clone();
+            return Ok(primary_entry);
         }
 
         // delete all iterators that are no longer needing to be used
