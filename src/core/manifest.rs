@@ -27,7 +27,7 @@ impl Default for SSTableVersion {
 
 #[derive(Clone)]
 pub struct SSTableLevel {
-    sstables: HashSet<u64>,
+    pub(crate) sstables: HashSet<u64>,
 }
 
 pub struct Manifest {

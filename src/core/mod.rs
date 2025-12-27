@@ -4,6 +4,7 @@ pub mod db;
 pub mod db_config;
 pub mod db_context;
 pub mod entry;
+pub mod file_block_iterator;
 pub mod file_utils;
 pub mod iterator;
 pub mod manifest;

@@ -45,7 +45,7 @@ pub struct MergeSortIterator {
 
     memtable_iters: Vec<Box<dyn SourceIterator>>,
 
-    sstable_level_iters: Vec<Box<dyn SourceIterator>>,
+    sstable_level_iters: Vec<Vec<Box<dyn SourceIterator>>>,
     sstable_level_iters_loaded: Vec<bool>,
 
     current_entry: Option<Arc<LogEntry>>,
@@ -214,6 +214,27 @@ impl MergeSortIterator {
 
         self.current_entry = primary_entry.clone();
         Ok(primary_entry)
+    }
+
+    fn get_sstable_iter_next(&mut self, level: usize) -> Option<Arc<LogEntry>> {
+        let Some(level_loaded) = self.sstable_level_iters_loaded.get(level) else {
+            return None;
+        };
+
+        if !level_loaded {}
+
+        None
+    }
+
+    fn load_sstable_iters(&mut self, level: usize) -> Result<(), MergeSortIteratorError> {
+        let sstables = &self
+            .read_state
+            .sstable_version
+            .sstable_levels
+            .get(level)
+            .unwrap()
+            .sstables;
+        Ok(())
     }
 }
 
