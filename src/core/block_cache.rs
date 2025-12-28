@@ -27,7 +27,7 @@ pub struct SSTable {
 pub struct FileBlockData {
     file_id: u64,
     block_id: u32,
-    block: Block,
+    block: DataBlock,
 
     record: MemoryRecord,
 }
@@ -35,11 +35,26 @@ pub struct FileBlockData {
 ///////////////////////////////////////////////////
 // Handles
 
-pub struct BlockDataHandle {
+pub struct DataBlockHandle {
     entry: Arc<CachedDataBlock>,
 }
 
-impl Drop for BlockDataHandle {
+impl DataBlockHandle {
+    pub(crate) fn data_block_ref(&self) -> &DataBlock {
+        &self.entry.data.block
+    }
+}
+
+impl Clone for DataBlockHandle {
+    fn clone(&self) -> Self {
+        self.entry.refs.fetch_add(1, Ordering::SeqCst);
+        Self {
+            entry: self.entry.clone(),
+        }
+    }
+}
+
+impl Drop for DataBlockHandle {
     fn drop(&mut self) {
         self.entry.refs.fetch_sub(1, Ordering::SeqCst);
     }
@@ -54,13 +69,16 @@ pub struct CachedDataBlock {
 }
 
 pub struct BlockCacheShard {
+    db_context: Arc<DBContext>,
+
     data_blocks: BTreeMap<(u64, u32), Arc<CachedDataBlock>>,
     lru_list: LinkedList<(u64, u32)>,
 }
 
 impl BlockCacheShard {
-    fn new() -> BlockCacheShard {
+    fn new(db_context: Arc<DBContext>) -> BlockCacheShard {
         BlockCacheShard {
+            db_context,
             data_blocks: BTreeMap::new(),
             lru_list: LinkedList::new(),
         }
@@ -70,45 +88,40 @@ impl BlockCacheShard {
         &mut self,
         file_id: u64,
         block_id: u32,
-        block: Block,
+        block: DataBlock,
         record: MemoryRecord,
-    ) -> (Option<BlockDataHandle>, bool) {
-        match block {
-            Block::DataBlock { .. } => {
-                let key = (file_id.clone(), block_id.clone());
-                if self.data_blocks.contains_key(&key) {
-                    return (None, false);
-                }
-
-                let cached_data_block = Arc::new(CachedDataBlock {
-                    refs: AtomicUsize::new(1),
-                    evicted: AtomicBool::new(false),
-                    data: Arc::new(FileBlockData {
-                        file_id,
-                        block_id,
-                        block,
-                        record,
-                    }),
-                });
-                self.data_blocks
-                    .insert(key.clone(), cached_data_block.clone());
-                self.lru_list.push_front(key);
-                (
-                    Some(BlockDataHandle {
-                        entry: cached_data_block,
-                    }),
-                    true,
-                )
-            }
-            Block::IndexBlock { .. } => (None, false),
-            Block::FooterBlock { .. } => (None, false),
+    ) -> (Option<DataBlockHandle>, bool) {
+        let key = (file_id.clone(), block_id.clone());
+        if self.data_blocks.contains_key(&key) {
+            return (None, false);
         }
+
+        let cached_data_block = Arc::new(CachedDataBlock {
+            refs: AtomicUsize::new(1),
+            evicted: AtomicBool::new(false),
+            data: Arc::new(FileBlockData {
+                file_id,
+                block_id,
+                block,
+                record,
+            }),
+        });
+        self.data_blocks
+            .insert(key.clone(), cached_data_block.clone());
+        self.lru_list.push_front(key);
+
+        (
+            Some(DataBlockHandle {
+                entry: cached_data_block,
+            }),
+            true,
+        )
     }
 
-    fn get_data_block(&mut self, file_id: &u64, block_id: &u32) -> Option<BlockDataHandle> {
+    fn get_data_block(&mut self, file_id: &u64, block_id: &u32) -> Option<DataBlockHandle> {
         let block = self.data_blocks.get(&(*file_id, *block_id));
         match block {
-            Some(block) => Some(BlockDataHandle {
+            Some(block) => Some(DataBlockHandle {
                 entry: block.clone(),
             }),
             None => None,
@@ -126,7 +139,7 @@ impl BlockCache {
         let mut shards = Vec::new();
         let num_shards = db_context.config().block_cache_num_shards();
         for _ in 0..num_shards {
-            shards.push(Mutex::new(BlockCacheShard::new()));
+            shards.push(Mutex::new(BlockCacheShard::new(db_context.clone())));
         }
         let inner = Arc::new(BlockCacheInner {
             memory_manager: memory_manager.clone(),
@@ -187,31 +200,25 @@ impl BlockCache {
         &self,
         file_id: u64,
         block_id: u32,
-        block: Block,
-    ) -> Result<(Option<BlockDataHandle>, bool), BlockCacheError> {
-        match block {
-            Block::DataBlock(_) => {
-                let record = self.new_pre_allocated_record(block.size())?;
-                let shard_idx = (file_id as usize) % self.inner.num_shards;
-                let handle = self
-                    .inner
-                    .shards
-                    .get(shard_idx)
-                    .expect("expected shard")
-                    .lock()?
-                    .add_data_block(file_id, block_id, block, record);
-                Ok(handle)
-            }
-            Block::IndexBlock(_) => Ok((None, false)),
-            Block::FooterBlock(_) => Ok((None, false)),
-        }
+        block: DataBlock,
+    ) -> Result<(Option<DataBlockHandle>, bool), BlockCacheError> {
+        let record = self.new_pre_allocated_record(block.size())?;
+        let shard_idx = (file_id as usize) % self.inner.num_shards;
+        let handle = self
+            .inner
+            .shards
+            .get(shard_idx)
+            .expect("expected shard")
+            .lock()?
+            .add_data_block(file_id, block_id, block, record);
+        Ok(handle)
     }
 
     pub fn get_data_block(
         &self,
         file_id: &u64,
         block_id: &u32,
-    ) -> Result<Option<BlockDataHandle>, BlockCacheError> {
+    ) -> Result<Option<DataBlockHandle>, BlockCacheError> {
         let shard_idx = (*file_id as usize) % self.inner.num_shards;
         let handle = self
             .inner
@@ -265,6 +272,15 @@ impl BlockCacheInner {
                 break;
             }
             let idx = self.maintain_idx.fetch_add(1, Ordering::Relaxed) % self.num_shards;
+
+            // wait for the usage to reach 80% before freeing blocks
+            if self.memory_manager.usage_ratio() < 0.8 {
+                continue;
+            }
+
+            self.db_context
+                .log_debug(format!("[BlockCache] trying to free blocks"));
+
             let mut shard = self.shards.get(idx).expect("expected shard").lock()?;
             let keys_to_delete: Vec<(u64, u32)> = shard
                 .data_blocks
@@ -280,7 +296,7 @@ impl BlockCacheInner {
             for key in keys_to_delete {
                 shard.data_blocks.remove(&key);
             }
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
         Ok(())
     }

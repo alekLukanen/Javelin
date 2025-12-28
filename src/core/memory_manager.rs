@@ -27,6 +27,11 @@ impl MemoryManager {
             allow_first_allocation,
         )
     }
+
+    pub fn usage_ratio(&self) -> f32 {
+        self.memory_pool.usage.load(atomic::Ordering::SeqCst) as f32
+            / self.memory_pool.max_usage as f32
+    }
 }
 
 ////////////////////////////////////////

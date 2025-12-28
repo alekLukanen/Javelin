@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::{io::Cursor, sync::Arc};
+
+use crate::core::buf_utils;
 
 use super::{
     db_context::DBContext, entry::LogEntry, memtable::ImmutableMemtable, skiplist::SkipListIter,
@@ -39,6 +41,12 @@ pub struct DataBlock {
     pub(crate) restarts: Vec<u32>,
 }
 
+impl DataBlock {
+    pub fn size(&self) -> usize {
+        self.keys.iter().map(|item| item.size()).sum::<usize>() + 8 + self.restarts.len() * 4
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FooterBlock {
     pub(crate) magic: u64,
@@ -56,24 +64,8 @@ pub enum Block {
 impl Block {
     pub fn size(&self) -> usize {
         match self {
-            Self::DataBlock(data_block) => {
-                data_block
-                    .keys
-                    .iter()
-                    .map(|item| item.size())
-                    .sum::<usize>()
-                    + 8
-                    + data_block.restarts.len() * 4
-            }
-            Self::IndexBlock(index_block) => {
-                index_block
-                    .keys
-                    .iter()
-                    .map(|item| item.size())
-                    .sum::<usize>()
-                    + 8
-                    + index_block.restarts.len() * 4
-            }
+            Self::DataBlock(data_block) => data_block.size(),
+            Self::IndexBlock(index_block) => index_block.size(),
             Self::FooterBlock(footer_block) => {
                 8 + footer_block.data_block_handle.size() + footer_block.index_block_handle.size()
             }
@@ -94,6 +86,17 @@ impl PrefixCompressedEntry {
     pub fn size(&self) -> usize {
         // the 9 is from the entry type + sequence number
         4 + 4 + 4 + self.unshared_len as usize + 9 + self.value_len as usize
+    }
+    pub(crate) fn user_key_suffix(&self) -> &[u8] {
+        &self.key_suffix[0..self.key_suffix.len() - 9]
+    }
+    pub(crate) fn log_seq_num(&self) -> u64 {
+        let mut bytes =
+            Cursor::new(&self.key_suffix[self.key_suffix.len() - 9..self.key_suffix.len() - 1]);
+        buf_utils::read_u64(&mut bytes).expect("expected log sequence number")
+    }
+    pub(crate) fn entry_type(&self) -> u8 {
+        self.key_suffix[self.key_suffix.len() - 1].clone()
     }
 }
 
@@ -153,15 +156,17 @@ impl SSTableBuilder {
                 compressed_entries.push(next_compressed_entry);
             } else {
                 // get the previous key
-                let prev_key = match &prev_key {
+                let current_prev_key = match &prev_key {
                     Some(prev_key) => prev_key,
                     None => panic!("previous key not found"),
                 };
-                let next_compressed_entry = Self::compressed_entry_from_log_entry(&entry, prev_key);
+                let next_compressed_entry =
+                    Self::compressed_entry_from_log_entry(&entry, current_prev_key);
 
                 // update state
                 restart_offset += next_compressed_entry.size() as u32;
                 block_size += next_compressed_entry.size();
+                prev_key = Some(entry.entry.key());
                 compressed_entries.push(next_compressed_entry);
             }
 
@@ -212,16 +217,17 @@ impl SSTableBuilder {
                 compressed_entries.push(next_compressed_entry);
             } else {
                 // get the previous key
-                let prev_key = match &prev_key {
+                let current_prev_key = match &prev_key {
                     Some(prev_key) => prev_key,
                     None => panic!("previous key not found"),
                 };
                 let next_compressed_entry =
-                    Self::compressed_entry_from_index_item(key, block_handle, prev_key);
+                    Self::compressed_entry_from_index_item(key, block_handle, current_prev_key);
 
                 // update state
                 restart_offset += next_compressed_entry.size() as u32;
                 block_size += next_compressed_entry.size();
+                prev_key = Some(key.clone());
                 compressed_entries.push(next_compressed_entry);
             }
 

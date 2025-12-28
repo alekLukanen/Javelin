@@ -20,6 +20,8 @@ pub mod wal;
 #[cfg(test)]
 mod test_db;
 #[cfg(test)]
+mod test_file_block_iterator;
+#[cfg(test)]
 mod test_merge_sort_iterator;
 #[cfg(test)]
 mod test_skiplist;
