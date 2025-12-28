@@ -124,40 +124,48 @@ impl FileBlockIterator {
                         ));
                     };
 
+                    self.db_context.log_debug(format!(
+                        "restarts.len(): {}, keys.len(): {}",
+                        index_block.restarts.len(),
+                        index_block.keys.len()
+                    ));
+
                     // binary search the keys in the indexes to find the first block
                     let mut left = 0;
                     let mut right = index_block.restarts.len() - 1;
+                    let mut lowest_data_block = right;
                     while left <= right {
                         let middle = left + (right - left) / 2;
+                        self.db_context.log_debug(format!(
+                            "left: {}, right: {}, middle: {}",
+                            left, right, middle
+                        ));
 
                         let sample_entry = &index_block.keys.get(middle).expect("expected entry");
                         let key = sample_entry.user_key_suffix();
-                        let log_sequence_num = sample_entry.log_seq_num();
 
                         // compare the key and log_seq_num
                         match &lower_bound[..].cmp(key) {
-                            Ordering::Equal => match self.log_sequence_num.cmp(&log_sequence_num) {
-                                Ordering::Equal => {
-                                    self.set_block(middle as u32)?;
-                                    return Ok(true);
-                                }
-                                Ordering::Less => {
-                                    left = middle + 1;
-                                }
-                                Ordering::Greater => {
+                            Ordering::Less => {
+                                if left == 0 && right == 0 {
+                                    break;
+                                } else {
                                     right = middle - 1;
                                 }
-                            },
-                            Ordering::Less => {
-                                left = middle + 1;
                             }
-                            Ordering::Greater => {
-                                right = middle - 1;
+                            Ordering::Equal | Ordering::Greater => {
+                                left = middle + 1;
+                                if middle < lowest_data_block {
+                                    lowest_data_block = middle;
+                                }
                             }
                         }
                     }
 
-                    Ok(false)
+                    self.set_block(lowest_data_block as u32)?;
+                    self.seek_block_lower_bound();
+
+                    Ok(true)
                 }
                 None => {
                     self.db_context
@@ -170,6 +178,9 @@ impl FileBlockIterator {
     }
 
     fn set_block(&mut self, block_id: u32) -> Result<(), FileBlockIteratorError> {
+        self.db_context
+            .log_debug(format!("set_block: block_id={}", block_id));
+
         let Some(data_block) = self.block_cache.get_data_block(&self.file_id, &block_id)? else {
             return Err(FileBlockIteratorError::DataBlockNotFound(
                 self.file_id.clone(),
@@ -186,6 +197,78 @@ impl FileBlockIterator {
         });
 
         Ok(())
+    }
+
+    fn seek_block_lower_bound(&mut self) -> bool {
+        match (&self.lower_bound, &mut self.current_block) {
+            (Some(lower_bound), Some(current_block)) => {
+                let data_block = current_block.data.data_block_ref();
+
+                let mut left = 0;
+                let mut right = data_block.restarts.len() - 1;
+                let mut lowest_entry = data_block.restarts.len();
+                while left <= right {
+                    let middle = left + (right - left) / 2;
+                    self.db_context.log_debug(format!(
+                        "left: {}, right: {}, middle: {}",
+                        left, right, middle
+                    ));
+
+                    let restart_row_idx =
+                        *data_block.restarts.get(middle).expect("expected restart") as usize;
+
+                    self.db_context
+                        .log_debug(format!("restart_row_idx: {}", restart_row_idx));
+
+                    let sample_entry = data_block
+                        .keys
+                        .get(restart_row_idx)
+                        .expect("expected entry");
+                    let key = sample_entry.user_key_suffix();
+                    let log_sequence_num = sample_entry.log_seq_num();
+
+                    // compare the key and log_seq_num
+                    match &lower_bound[..].cmp(key) {
+                        Ordering::Equal => match self.log_sequence_num.cmp(&log_sequence_num) {
+                            Ordering::Less => {
+                                left = middle + 1;
+                                if middle < lowest_entry {
+                                    lowest_entry = middle;
+                                }
+                            }
+                            Ordering::Equal | Ordering::Greater => {
+                                if left == 0 && right == 0 {
+                                    break;
+                                } else {
+                                    right = middle - 1;
+                                }
+                            }
+                        },
+                        Ordering::Less => {
+                            if left == 0 && right == 0 {
+                                break;
+                            } else {
+                                right = middle - 1;
+                            }
+                        }
+                        Ordering::Greater => {
+                            left = middle + 1;
+                            if middle < lowest_entry {
+                                lowest_entry = middle;
+                            }
+                        }
+                    }
+                }
+
+                if lowest_entry != data_block.keys.len() {
+                    current_block.row_idx = lowest_entry;
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
     }
 
     fn build_next_entry(current_block: &mut CurrentBlock) -> Option<Arc<LogEntry>> {
@@ -240,10 +323,7 @@ impl FileBlockIterator {
                 }
             }
             None => {
-                assert_eq!(0, current_block.row_idx);
-                assert_eq!(0, current_block.restart_idx);
-
-                let Some(first_row) = data_block.keys.get(0) else {
+                let Some(first_row) = data_block.keys.get(current_block.row_idx) else {
                     return None;
                 };
                 let user_key = first_row.user_key_suffix().to_vec();
