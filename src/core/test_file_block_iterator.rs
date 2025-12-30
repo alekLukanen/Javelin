@@ -30,7 +30,6 @@ fn test_simple_case_file_block_iterator_without_lower_and_upper_bounds()
         starting_log_sequence_num: 100,
     };
     let sample_memtable = sample_config.build(&tc)?;
-    let sample_log_entries = sample_config.build_log_entries(&tc)?;
 
     let immuitable_memtable = Arc::new(ImmutableMemtable::new(
         0,
@@ -85,14 +84,18 @@ fn test_simple_case_file_block_iterator_without_lower_and_upper_bounds()
         None,
     );
 
+    let mut sample_log_entries = sample_config.build_log_entries(&tc)?;
+
     loop {
         let Some(entry) = iter.next()? else {
             break;
         };
         println!("entry: {:?}", entry);
 
-        assert!(sample_log_entries.contains_entry(entry));
+        sample_log_entries.assert_contains_entry(entry);
     }
+
+    sample_log_entries.assert_all_entries_found();
 
     Ok(())
 }
@@ -116,7 +119,6 @@ fn test_simple_case_file_block_iterator_with_lower_but_no_upper_bound() -> Resul
         starting_log_sequence_num: 100,
     };
     let sample_memtable = sample_config.build(&tc)?;
-    let sample_log_entries = sample_config.build_log_entries(&tc)?;
 
     let immuitable_memtable = Arc::new(ImmutableMemtable::new(
         0,
@@ -161,16 +163,21 @@ fn test_simple_case_file_block_iterator_with_lower_but_no_upper_bound() -> Resul
     drop(sstable_writer);
 
     let log_sequence_num: u64 = 200;
-    let lower_bound = 15u64.to_be_bytes().to_vec();
+    let lower_bound = Some(15u64.to_be_bytes().to_vec());
+    let upper_bound = None;
+
     let mut iter = FileBlockIterator::new(
         tc.db_context.clone(),
         block_cache.clone(),
         level,
         file_id,
         log_sequence_num,
-        Some(lower_bound),
-        None,
+        lower_bound.clone(),
+        upper_bound.clone(),
     );
+
+    let mut sample_log_entries = sample_config.build_log_entries(&tc)?;
+    sample_log_entries.filter_in_bounds(lower_bound, upper_bound);
 
     loop {
         let Some(entry) = iter.next()? else {
@@ -178,8 +185,10 @@ fn test_simple_case_file_block_iterator_with_lower_but_no_upper_bound() -> Resul
         };
         println!("entry: {:?}", entry);
 
-        assert!(sample_log_entries.contains_entry(entry));
+        sample_log_entries.assert_contains_entry(entry);
     }
+
+    sample_log_entries.assert_all_entries_found();
 
     Ok(())
 }

@@ -1,4 +1,4 @@
-use std::{error::Error, fs, io, path::PathBuf, sync::Arc};
+use std::{cmp::Ordering, error::Error, fs, io, path::PathBuf, sync::Arc};
 
 use crate::core::{
     entry::{Entry, LogEntry},
@@ -85,9 +85,9 @@ pub(crate) enum SampleMemtableBuilder {
 
 impl SampleMemtableBuilder {
     pub(crate) fn build_log_entries(&self, tc: &TestContext) -> Result<LogEntries, Box<dyn Error>> {
-        Ok(LogEntries {
-            entries: self.build(tc)?.skip_list_iter().collect::<Vec<_>>(),
-        })
+        Ok(LogEntries::new(
+            self.build(tc)?.skip_list_iter().collect::<Vec<_>>(),
+        ))
     }
     pub(crate) fn build(&self, tc: &TestContext) -> Result<Arc<Memtable>, Box<dyn Error>> {
         let table = Arc::new(Memtable::new(
@@ -136,10 +136,71 @@ impl SampleMemtableBuilder {
 
 pub struct LogEntries {
     entries: Vec<Arc<LogEntry>>,
+    entries_asserted: Vec<bool>,
 }
 
 impl LogEntries {
-    pub(crate) fn contains_entry(&self, entry: Arc<LogEntry>) -> bool {
-        self.entries.iter().find(|item| ***item == *entry).is_some()
+    fn new(entries: Vec<Arc<LogEntry>>) -> LogEntries {
+        LogEntries {
+            entries: entries.clone(),
+            entries_asserted: vec![false; entries.len()],
+        }
+    }
+    pub(crate) fn assert_contains_entry(&mut self, entry: Arc<LogEntry>) {
+        match self
+            .entries
+            .iter()
+            .enumerate()
+            .find(|(_, item)| ***item == *entry)
+        {
+            Some((idx, _)) => {
+                self.entries_asserted.insert(idx, true);
+            }
+            None => {
+                panic!("entry not in expected entries: {:?}", entry);
+            }
+        }
+    }
+    pub(crate) fn assert_all_entries_found(&self) {
+        let mut entries_found = 0;
+        for (idx, entry) in self.entries.iter().enumerate() {
+            if !self.entries_asserted.get(idx).unwrap() {
+                println!("[idx={}] entry not found: {:?}", idx, entry);
+            } else {
+                entries_found += 1;
+            }
+        }
+        if entries_found != self.entries.len() {
+            panic!(
+                "not all entries found; found={}, not found={}",
+                entries_found,
+                self.entries.len() - entries_found
+            );
+        }
+    }
+    pub(crate) fn filter_in_bounds(
+        &mut self,
+        lower_bound: Option<Vec<u8>>,
+        upper_bound: Option<Vec<u8>>,
+    ) {
+        let mut entries = Vec::new();
+        for entry in &self.entries {
+            match &lower_bound {
+                Some(lower_bound) => match &lower_bound[..].cmp(entry.entry.key_ref()) {
+                    Ordering::Greater => continue,
+                    _ => {}
+                },
+                None => {}
+            }
+            match &upper_bound {
+                Some(upper_bound) => match &upper_bound[..].cmp(entry.entry.key_ref()) {
+                    Ordering::Less => continue,
+                    _ => {}
+                },
+                None => {}
+            }
+            entries.push(entry.clone());
+        }
+        self.entries = entries;
     }
 }

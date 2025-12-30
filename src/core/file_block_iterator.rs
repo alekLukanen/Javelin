@@ -335,6 +335,7 @@ impl FileBlockIterator {
                             }
                             Ordering::Equal | Ordering::Greater => {
                                 if left == 0 && right == 0 {
+                                    lowest_entry_offset = entry_offset as u64;
                                     break;
                                 } else {
                                     right = middle - 1;
@@ -343,6 +344,7 @@ impl FileBlockIterator {
                         },
                         Ordering::Less => {
                             if left == 0 && right == 0 {
+                                lowest_entry_offset = entry_offset as u64;
                                 break;
                             } else {
                                 right = middle - 1;
