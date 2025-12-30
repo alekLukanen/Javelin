@@ -12,6 +12,7 @@ pub struct DBConfig {
     block_cache_num_shards: usize,
     data_dir: Option<PathBuf>,
     sstable_max_block_size: usize,
+    sstable_restart_interval: usize,
 
     manifest_num_levels: usize,
 
@@ -55,6 +56,10 @@ impl DBConfig {
         self.sstable_max_block_size.clone()
     }
 
+    pub fn sstable_restart_interval(&self) -> usize {
+        self.sstable_restart_interval.clone()
+    }
+
     pub fn manifest_num_levels(&self) -> usize {
         self.manifest_num_levels.clone()
     }
@@ -87,6 +92,7 @@ impl DBConfigBuilder {
                 data_dir: None,
                 manifest_num_levels: 3,
                 sstable_max_block_size: 2 << 14,
+                sstable_restart_interval: 4,
             },
         }
     }
@@ -137,6 +143,11 @@ impl DBConfigBuilder {
 
     pub fn sstable_max_block_size(mut self, val: usize) -> DBConfigBuilder {
         self.config.sstable_max_block_size = val;
+        self
+    }
+
+    pub fn sstable_restart_interval(mut self, val: usize) -> DBConfigBuilder {
+        self.config.sstable_restart_interval = val;
         self
     }
 

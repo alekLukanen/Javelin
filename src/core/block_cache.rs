@@ -8,26 +8,23 @@ use std::{
     },
 };
 
-use crate::core::sstable_builder::{DataBlock, FooterBlock};
-
 use super::{
     db_context::DBContext,
     memory_manager::{MemoryManager, MemoryRecord, MemoryRecordError},
-    sstable_builder::Block,
 };
 
 /////////////////////////////////////////////////////
 
 pub struct SSTable {
     id: u64,
-    footer: Arc<FooterBlock>,
-    index: Arc<DataBlock>,
+    footer: Arc<Vec<u8>>,
+    index: Arc<Vec<u8>>,
 }
 
 pub struct FileBlockData {
     file_id: u64,
     block_id: u32,
-    block: DataBlock,
+    block: Vec<u8>,
 
     record: MemoryRecord,
 }
@@ -40,7 +37,7 @@ pub struct DataBlockHandle {
 }
 
 impl DataBlockHandle {
-    pub(crate) fn data_block_ref(&self) -> &DataBlock {
+    pub(crate) fn data_block_ref(&self) -> &Vec<u8> {
         &self.entry.data.block
     }
 }
@@ -88,7 +85,7 @@ impl BlockCacheShard {
         &mut self,
         file_id: u64,
         block_id: u32,
-        block: DataBlock,
+        block: Vec<u8>,
         record: MemoryRecord,
     ) -> (Option<DataBlockHandle>, bool) {
         let key = (file_id.clone(), block_id.clone());
@@ -182,8 +179,8 @@ impl BlockCache {
     pub fn add_sstable(
         &self,
         file_id: u64,
-        footer: FooterBlock,
-        index: DataBlock,
+        footer: Vec<u8>,
+        index: Vec<u8>,
     ) -> Result<(), BlockCacheError> {
         self.inner.sstables.lock()?.insert(
             file_id.clone(),
@@ -200,9 +197,9 @@ impl BlockCache {
         &self,
         file_id: u64,
         block_id: u32,
-        block: DataBlock,
+        block: Vec<u8>,
     ) -> Result<(Option<DataBlockHandle>, bool), BlockCacheError> {
-        let record = self.new_pre_allocated_record(block.size())?;
+        let record = self.new_pre_allocated_record(block.len())?;
         let shard_idx = (file_id as usize) % self.inner.num_shards;
         let handle = self
             .inner
@@ -230,10 +227,7 @@ impl BlockCache {
         Ok(handle)
     }
 
-    pub fn get_index_block(
-        &self,
-        file_id: &u64,
-    ) -> Result<Option<Arc<DataBlock>>, BlockCacheError> {
+    pub fn get_index_block(&self, file_id: &u64) -> Result<Option<Arc<Vec<u8>>>, BlockCacheError> {
         let sstables_guard = self.inner.sstables.lock()?;
         let sstable = sstables_guard.get(&file_id);
         match sstable {

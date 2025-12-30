@@ -16,7 +16,7 @@ pub enum SSTableReaderError {
     FileTooSmallForFooter(u64),
     FileTooSmallForDataBlock(u64),
     InvalidMagic(u64, u64),
-    InvalidCRC32(u32, u32),
+    InvalidCRC32,
     EntryMalformed(String),
 }
 
@@ -33,8 +33,8 @@ impl Display for SSTableReaderError {
             Self::InvalidMagic(valid, magic) => {
                 write!(f, "InvalidMagic: valid={}, actual={}", valid, magic)
             }
-            Self::InvalidCRC32(valid, actual) => {
-                write!(f, "InvalidCRC32: valid={}, actual={}", valid, actual)
+            Self::InvalidCRC32 => {
+                write!(f, "InvalidCRC32")
             }
             Self::EntryMalformed(reason) => {
                 write!(f, "EntryMalformed: reason={}", reason)
@@ -50,7 +50,7 @@ impl Error for SSTableReaderError {
             Self::FileTooSmallForFooter(_) => None,
             Self::FileTooSmallForDataBlock(_) => None,
             Self::InvalidMagic(_, _) => None,
-            Self::InvalidCRC32(_, _) => None,
+            Self::InvalidCRC32 => None,
             Self::EntryMalformed(_) => None,
         }
     }
@@ -129,7 +129,9 @@ impl SSTableReader {
         let max_restarts_pos = block_size - 5;
 
         // parse the crc32 and compression
-        Self::valid_block_crc32(&buf)?;
+        if !buf_utils::valid_block_crc32(&buf)? {
+            return Err(SSTableReaderError::InvalidCRC32);
+        }
 
         // parse the entries
         let mut entries: Vec<PrefixCompressedEntry> = Vec::new();
@@ -215,7 +217,9 @@ impl SSTableReader {
         let data_block_handle = buf_utils::read_handle(&mut cursor)?;
         let index_block_handle = buf_utils::read_handle(&mut cursor)?;
 
-        Self::valid_block_crc32(&buf)?;
+        if !buf_utils::valid_block_crc32(&buf)? {
+            return Err(SSTableReaderError::InvalidCRC32);
+        }
 
         if magic != 69 {
             return Err(SSTableReaderError::InvalidMagic(69, magic));
@@ -228,21 +232,5 @@ impl SSTableReader {
         };
         self.footer = Some(footer_block.clone());
         Ok(footer_block.clone())
-    }
-
-    #[inline]
-    fn valid_block_crc32(buf: &Vec<u8>) -> Result<bool, SSTableReaderError> {
-        let mut cursor = Cursor::new(&buf[..]);
-        cursor.set_position(buf.len() as u64 - 4);
-
-        let crc32 = buf_utils::read_u32(&mut cursor)?;
-
-        // validate data
-        let valid_crc32 = CRC32.checksum(&buf[0..(buf.len() - 4) as usize]);
-        if valid_crc32 != crc32 {
-            return Err(SSTableReaderError::InvalidCRC32(valid_crc32, crc32));
-        }
-
-        Ok(true)
     }
 }

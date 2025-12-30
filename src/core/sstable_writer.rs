@@ -14,12 +14,16 @@ const CRC32: Crc<u32> = Crc::<u32>::new(&CRC_32_CKSUM);
 #[derive(Debug)]
 pub enum SSTableWriterError {
     IOError(io::Error),
+    IndexBlockAlreadyWritten,
+    FooterBlockAlreadyWritten,
 }
 
 impl Display for SSTableWriterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SSTableWriterError::IOError(e) => write!(f, "IOError: {}", e),
+            SSTableWriterError::IndexBlockAlreadyWritten => write!(f, "IndexBlockAlreadyWritten"),
+            SSTableWriterError::FooterBlockAlreadyWritten => write!(f, "FooterBlockAlreadyWritten"),
         }
     }
 }
@@ -28,6 +32,8 @@ impl Error for SSTableWriterError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             SSTableWriterError::IOError(e) => Some(e),
+            SSTableWriterError::IndexBlockAlreadyWritten => None,
+            SSTableWriterError::FooterBlockAlreadyWritten => None,
         }
     }
 }
@@ -39,6 +45,12 @@ impl From<io::Error> for SSTableWriterError {
 }
 
 //////////////////////////////////////////////////////
+
+pub enum BlockData {
+    DataBlock(Vec<u8>),
+    IndexBlock(Vec<u8>),
+    FooterBlock(Vec<u8>),
+}
 
 pub struct SSTableWriter {
     db_context: Arc<DBContext>,
@@ -72,41 +84,49 @@ impl SSTableWriter {
         })
     }
 
-    pub fn next_block(&mut self) -> Result<Option<Block>, SSTableWriterError> {
+    pub fn next_data_block(&mut self) -> Result<Option<Vec<u8>>, SSTableWriterError> {
         let next_block = self.builder.next();
         match next_block {
             Some(next_block) => {
-                self.write_block(&next_block)?;
-                Ok(Some(next_block))
+                let data = self.write_block(&next_block)?;
+                Ok(Some(data))
             }
-            None => match (self.returned_index_block, self.returned_footer_block) {
-                (false, false) => {
-                    let index_block = self.builder.index_block(&self.index_block_entries);
-                    self.write_block(&index_block)?;
-                    self.returned_index_block = true;
-                    Ok(Some(index_block))
-                }
-                (true, false) => {
-                    let footer_block = self.builder.footer(self.data_size, self.index_size);
-                    self.write_block(&footer_block)?;
-                    self.returned_footer_block = true;
-                    Ok(Some(footer_block))
-                }
-                _ => {
-                    self.file.sync_all()?;
-                    Ok(None)
-                }
-            },
+            None => Ok(None),
         }
     }
 
-    fn write_block(&mut self, block: &Block) -> Result<(), SSTableWriterError> {
+    pub fn index_block(&mut self) -> Result<Vec<u8>, SSTableWriterError> {
+        if !self.returned_index_block {
+            let index_block = self.builder.index_block(&self.index_block_entries);
+            let data = self.write_block(&index_block)?;
+            self.returned_index_block = true;
+            Ok(data)
+        } else {
+            Err(SSTableWriterError::IndexBlockAlreadyWritten)
+        }
+    }
+
+    pub fn footer_block(&mut self) -> Result<Vec<u8>, SSTableWriterError> {
+        if !self.returned_footer_block {
+            let footer_block = self.builder.footer(self.data_size, self.index_size);
+            let data = self.write_block(&footer_block)?;
+            self.returned_footer_block = true;
+
+            self.file.sync_all()?;
+
+            Ok(data)
+        } else {
+            Err(SSTableWriterError::FooterBlockAlreadyWritten)
+        }
+    }
+
+    fn write_block(&mut self, block: &Block) -> Result<Vec<u8>, SSTableWriterError> {
         match block {
             Block::DataBlock(data_block) => {
                 self.db_context.log_debug("writing data block".to_string());
-                let size =
+                let data =
                     self.write_data_or_index_block(&data_block.keys, &data_block.restarts)?;
-                self.data_size += size;
+                self.data_size += data.len();
                 self.index_block_entries.push((
                     data_block
                         .keys
@@ -114,26 +134,26 @@ impl SSTableWriter {
                         .expect("expected at least one key")
                         .key_suffix
                         .clone(),
-                    size,
+                    data.len(),
                 ));
-                Ok(())
+                Ok(data)
             }
             Block::IndexBlock(index_block) => {
                 self.db_context.log_debug("writing index block".to_string());
-                let size =
+                let data =
                     self.write_data_or_index_block(&index_block.keys, &index_block.restarts)?;
-                self.index_size = size;
-                Ok(())
+                self.index_size = data.len();
+                Ok(data)
             }
             Block::FooterBlock(footer_block) => {
                 self.db_context
                     .log_debug("writing footer block".to_string());
-                self.write_footer_block(
+                let data = self.write_footer_block(
                     &footer_block.magic,
                     &footer_block.data_block_handle,
                     &footer_block.index_block_handle,
                 )?;
-                Ok(())
+                Ok(data)
             }
         }
     }
@@ -143,7 +163,7 @@ impl SSTableWriter {
         magic: &u64,
         data_block_handle: &BlockHandle,
         index_block_handle: &BlockHandle,
-    ) -> Result<usize, SSTableWriterError> {
+    ) -> Result<Vec<u8>, SSTableWriterError> {
         let size = 8 + data_block_handle.size() + index_block_handle.size() + 1 + 4;
         let mut data: Vec<u8> = Vec::with_capacity(size);
 
@@ -161,14 +181,14 @@ impl SSTableWriter {
 
         assert_eq!(size, data.len());
 
-        Ok(data.len())
+        Ok(data)
     }
 
     fn write_data_or_index_block(
         &mut self,
         keys: &Vec<PrefixCompressedEntry>,
         restarts: &Vec<u32>,
-    ) -> Result<usize, SSTableWriterError> {
+    ) -> Result<Vec<u8>, SSTableWriterError> {
         let keys_len = keys.iter().map(|key| key.size() as u64).sum::<u64>();
         let size = 8 + keys_len as usize + restarts.len() * 4 + 4 + 1;
 
@@ -211,6 +231,6 @@ impl SSTableWriter {
 
         assert_eq!(size, data.len());
 
-        Ok(data.len())
+        Ok(data)
     }
 }

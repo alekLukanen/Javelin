@@ -277,25 +277,16 @@ impl DBBackend {
 
         // write the data to the sstable and the block cache
         let mut block_id: u32 = 0;
-        let mut index_block: Option<DataBlock> = None;
-        let mut footer_block: Option<FooterBlock> = None;
         loop {
-            match sstable_writer.next_block()? {
-                Some(Block::IndexBlock(block)) => {
-                    index_block = Some(block);
-                }
-                Some(Block::FooterBlock(block)) => footer_block = Some(block),
-                None => {
-                    break;
-                }
-                _ => {}
-            }
+            let Some(data_block) = sstable_writer.next_data_block()? else {
+                break;
+            };
             /*
             db_backend
                 .db_inner
                 .lock()?
                 .block_cache
-                .add_data_block(file_num, block_id, block)?;
+                .add_data_block(file_num, block_id, data_block)?;
             */
             if block_id == u32::MAX {
                 todo!("handle max block id");
@@ -303,12 +294,16 @@ impl DBBackend {
             block_id += 1;
         }
 
+        // write the index and footer
+        let index_block = sstable_writer.index_block()?;
+        let footer_block = sstable_writer.footer_block()?;
+
         // write the file to the block cache
-        db_backend.db_inner.lock()?.block_cache.add_sstable(
-            file_num,
-            footer_block.unwrap(),
-            index_block.unwrap(),
-        )?;
+        db_backend
+            .db_inner
+            .lock()?
+            .block_cache
+            .add_sstable(file_num, footer_block, index_block)?;
 
         // write the file to the manifest and remove the flushing memtable reference
         let mut guard = db_backend.db_inner.lock()?;

@@ -115,13 +115,12 @@ impl SSTableBuilder {
         db_context: Arc<DBContext>,
         memtable: Arc<ImmutableMemtable>,
     ) -> SSTableBuilder {
-        let max_block_size = db_context.config().sstable_max_block_size();
         SSTableBuilder {
-            db_context,
+            db_context: db_context.clone(),
             returned_index_block: false,
             immutable_memtable: Some(memtable.skip_list_iter()),
-            restart_segment_size: 8,
-            max_block_size,
+            restart_segment_size: db_context.config().sstable_restart_interval(),
+            max_block_size: db_context.config().sstable_max_block_size(),
         }
     }
 

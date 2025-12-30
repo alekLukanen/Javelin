@@ -1,8 +1,14 @@
-use std::{cmp::Ordering, error::Error, fmt::Display, sync::Arc};
+use std::{
+    cmp::Ordering,
+    error::Error,
+    fmt::Display,
+    io::{self, Cursor},
+    sync::Arc,
+};
 
 use crate::core::{
     block_cache::{BlockCache, BlockCacheError, DataBlockHandle},
-    db::ReadState,
+    buf_utils::{self, BufUtilsError},
     db_context::DBContext,
     entry::{Entry, LogEntry},
     iterator::{IteratorError, SourceIterator},
@@ -13,6 +19,10 @@ pub enum FileBlockIteratorError {
     BlockCacheError(BlockCacheError),
     FileIndexNotFound(u64),
     DataBlockNotFound(u64, u32),
+    InvalidCRC32,
+    IOError(io::Error),
+    RestartLenNotDivisibleByFour,
+    BufUtilsError(BufUtilsError),
 }
 
 impl Display for FileBlockIteratorError {
@@ -23,6 +33,10 @@ impl Display for FileBlockIteratorError {
             Self::DataBlockNotFound(file_id, block_id) => {
                 write!(f, "DatablockNotFound: {}, {}", file_id, block_id)
             }
+            Self::InvalidCRC32 => write!(f, "InvalidCRC32"),
+            Self::IOError(err) => write!(f, "IOError: {}", err),
+            Self::RestartLenNotDivisibleByFour => write!(f, "RestartLenNotDivisibleByFour"),
+            Self::BufUtilsError(err) => write!(f, "BufUtilsError: {}", err),
         }
     }
 }
@@ -33,22 +47,56 @@ impl Error for FileBlockIteratorError {
             Self::BlockCacheError(err) => Some(err),
             Self::FileIndexNotFound(_) => None,
             Self::DataBlockNotFound(_, _) => None,
+            Self::InvalidCRC32 => None,
+            Self::IOError(err) => Some(err),
+            Self::RestartLenNotDivisibleByFour => None,
+            Self::BufUtilsError(err) => Some(err),
         }
     }
 }
 
 impl From<BlockCacheError> for FileBlockIteratorError {
     fn from(value: BlockCacheError) -> Self {
-        FileBlockIteratorError::BlockCacheError(value)
+        Self::BlockCacheError(value)
+    }
+}
+
+impl From<io::Error> for FileBlockIteratorError {
+    fn from(value: io::Error) -> Self {
+        Self::IOError(value)
+    }
+}
+
+impl From<BufUtilsError> for FileBlockIteratorError {
+    fn from(value: BufUtilsError) -> Self {
+        Self::BufUtilsError(value)
     }
 }
 
 struct CurrentBlock {
     idx: u32,
     data: DataBlockHandle,
-    row_idx: usize,
-    restart_idx: usize,
+
+    keys_len: u64,
+    key_offset: u64,
+
+    restart_len: u64,
+    restart_offset: u64,
+
     current_user_key: Option<Vec<u8>>,
+}
+
+impl CurrentBlock {
+    fn key_cursor(&self) -> Cursor<&[u8]> {
+        let mut cursor = Cursor::new(&self.data.data_block_ref()[..]);
+        cursor.set_position(self.key_offset);
+        cursor
+    }
+    fn offset_cursor(&self) -> Cursor<&[u8]> {
+        let mut cursor = Cursor::new(&self.data.data_block_ref()[..]);
+        cursor.set_position(self.restart_offset);
+        cursor
+    }
 }
 
 pub struct FileBlockIterator {
@@ -93,7 +141,9 @@ impl FileBlockIterator {
     fn find_block(&mut self) -> Result<bool, FileBlockIteratorError> {
         match &self.current_block {
             Some(current_block) => {
-                if current_block.row_idx < current_block.data.data_block_ref().keys.len() - 1 {
+                if (current_block.key_offset as usize)
+                    < current_block.data.data_block_ref().len() - 1
+                {
                     return Ok(true);
                 }
 
@@ -124,16 +174,17 @@ impl FileBlockIterator {
                         ));
                     };
 
-                    self.db_context.log_debug(format!(
-                        "restarts.len(): {}, keys.len(): {}",
-                        index_block.restarts.len(),
-                        index_block.keys.len()
-                    ));
+                    self.db_context
+                        .log_debug(format!("index_block.len(): {}", index_block.len(),));
+
+                    let (mut entry_cursor, mut restart_cursor) =
+                        buf_utils::entry_and_restart_cursors(&index_block)?;
+
+                    let (mut left, mut right) =
+                        buf_utils::restart_start_and_end_offsets(&index_block)?;
 
                     // binary search the keys in the indexes to find the first block
-                    let mut left = 0;
-                    let mut right = index_block.restarts.len() - 1;
-                    let mut lowest_data_block = right;
+                    let mut lowest_restart_offset = right;
                     while left <= right {
                         let middle = left + (right - left) / 2;
                         self.db_context.log_debug(format!(
@@ -141,8 +192,13 @@ impl FileBlockIterator {
                             left, right, middle
                         ));
 
-                        let sample_entry = &index_block.keys.get(middle).expect("expected entry");
-                        let key = sample_entry.user_key_suffix();
+                        restart_cursor.set_position(middle);
+                        let index_key_offset = buf_utils::read_u32(&mut restart_cursor)?;
+
+                        entry_cursor.set_position(index_key_offset as u64);
+                        let index_key_entry = buf_utils::read_entry(&mut entry_cursor)?;
+
+                        let key = index_key_entry.user_key_suffix();
 
                         // compare the key and log_seq_num
                         match &lower_bound[..].cmp(key) {
@@ -150,19 +206,25 @@ impl FileBlockIterator {
                                 if left == 0 && right == 0 {
                                     break;
                                 } else {
-                                    right = middle - 1;
+                                    right = middle - 4;
                                 }
                             }
                             Ordering::Equal | Ordering::Greater => {
-                                left = middle + 1;
-                                if middle < lowest_data_block {
-                                    lowest_data_block = middle;
+                                left = middle + 4;
+                                if middle < lowest_restart_offset {
+                                    lowest_restart_offset = middle;
                                 }
                             }
                         }
                     }
 
-                    self.set_block(lowest_data_block as u32)?;
+                    // TODO: improve this so that the iterator doesn't need to scan through
+                    // data blocks to find the starting point. Reconstruct the index keys
+                    // after finding the lowest restart offset
+                    let data_block_id = (lowest_restart_offset / 4)
+                        * self.db_context.config().sstable_restart_interval() as u64;
+
+                    self.set_block(data_block_id as u32)?;
                     self.seek_block_lower_bound();
 
                     Ok(true)
@@ -188,25 +250,53 @@ impl FileBlockIterator {
             ));
         };
 
+        let data = data_block.data_block_ref();
+        let mut cursor = Cursor::new(&data[..]);
+
+        let keys_len = buf_utils::read_u64(&mut cursor)?;
+        let block_size = data.len() as u64;
+
+        // keys + keys len size
+        let max_keys_pos: u64 = keys_len + 8;
+
+        // block size - crc32 and compression size
+        let max_restarts_pos: u64 = block_size - 5;
+
+        if (max_restarts_pos - max_restarts_pos) % 4 != 0 {
+            return Err(FileBlockIteratorError::RestartLenNotDivisibleByFour);
+        }
+
+        let restart_len = (max_restarts_pos - max_keys_pos) / 4;
+
+        // parse the crc32 and compression
+        if !buf_utils::valid_block_crc32(data)? {
+            return Err(FileBlockIteratorError::InvalidCRC32);
+        }
+
         self.current_block = Some(CurrentBlock {
             idx: block_id,
             data: data_block.clone(),
-            row_idx: 0,
-            restart_idx: 0,
+            keys_len: keys_len,
+            key_offset: 0,
+            restart_len,
+            restart_offset: 0,
             current_user_key: None,
         });
 
         Ok(())
     }
 
-    fn seek_block_lower_bound(&mut self) -> bool {
+    fn seek_block_lower_bound(&mut self) -> Result<bool, FileBlockIteratorError> {
         match (&self.lower_bound, &mut self.current_block) {
             (Some(lower_bound), Some(current_block)) => {
                 let data_block = current_block.data.data_block_ref();
 
-                let mut left = 0;
-                let mut right = data_block.restarts.len() - 1;
-                let mut lowest_entry = data_block.restarts.len();
+                let (mut entry_cursor, mut restart_cursor) =
+                    buf_utils::entry_and_restart_cursors(&data_block)?;
+
+                let (mut left, mut right) = buf_utils::restart_start_and_end_offsets(&data_block)?;
+
+                let mut lowest_offset_entry = right;
                 while left <= right {
                     let middle = left + (right - left) / 2;
                     self.db_context.log_debug(format!(
@@ -214,26 +304,22 @@ impl FileBlockIterator {
                         left, right, middle
                     ));
 
-                    let restart_row_idx =
-                        *data_block.restarts.get(middle).expect("expected restart") as usize;
+                    restart_cursor.set_position(middle);
+                    let entry_offset = buf_utils::read_u32(&mut restart_cursor)?;
 
-                    self.db_context
-                        .log_debug(format!("restart_row_idx: {}", restart_row_idx));
+                    entry_cursor.set_position(entry_offset as u64);
+                    let key_entry = buf_utils::read_entry(&mut entry_cursor)?;
 
-                    let sample_entry = data_block
-                        .keys
-                        .get(restart_row_idx)
-                        .expect("expected entry");
-                    let key = sample_entry.user_key_suffix();
-                    let log_sequence_num = sample_entry.log_seq_num();
+                    let key = key_entry.user_key_suffix();
+                    let log_sequence_num = key_entry.log_seq_num();
 
                     // compare the key and log_seq_num
                     match &lower_bound[..].cmp(key) {
                         Ordering::Equal => match self.log_sequence_num.cmp(&log_sequence_num) {
                             Ordering::Less => {
                                 left = middle + 1;
-                                if middle < lowest_entry {
-                                    lowest_entry = middle;
+                                if middle < lowest_offset_entry {
+                                    lowest_offset_entry = middle;
                                 }
                             }
                             Ordering::Equal | Ordering::Greater => {
@@ -253,21 +339,21 @@ impl FileBlockIterator {
                         }
                         Ordering::Greater => {
                             left = middle + 1;
-                            if middle < lowest_entry {
-                                lowest_entry = middle;
+                            if middle < lowest_offset_entry {
+                                lowest_offset_entry = middle;
                             }
                         }
                     }
                 }
 
-                if lowest_entry != data_block.keys.len() {
-                    current_block.row_idx = lowest_entry;
-                    true
-                } else {
-                    false
-                }
+                restart_cursor.set_position(lowest_offset_entry);
+                let entry_offset = buf_utils::read_u32(&mut restart_cursor)?;
+
+                current_block.key_offset = entry_offset as u64;
+                current_block.restart_offset = lowest_offset_entry;
+                Ok(true)
             }
-            _ => false,
+            _ => Ok(false),
         }
     }
 
@@ -275,7 +361,7 @@ impl FileBlockIterator {
         // rebuild the entry from the prefix compressed entries
         let data_block = current_block.data.data_block_ref();
 
-        if current_block.row_idx >= data_block.keys.len() {
+        if current_block.key_offset > current_block.keys_len {
             return None;
         }
 
@@ -326,6 +412,7 @@ impl FileBlockIterator {
                 let Some(first_row) = data_block.keys.get(current_block.row_idx) else {
                     return None;
                 };
+
                 let user_key = first_row.user_key_suffix().to_vec();
                 let val = first_row.value.clone();
                 let log_seq_num = first_row.log_seq_num();
