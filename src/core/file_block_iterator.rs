@@ -12,6 +12,7 @@ use crate::core::{
     db_context::DBContext,
     entry::{Entry, LogEntry},
     iterator::{IteratorError, SourceIterator},
+    sstable_builder::PrefixCompressedEntry,
 };
 
 #[derive(Debug)]
@@ -158,6 +159,9 @@ impl FileBlockIterator {
             // fetch the initial block depending on the configuration
             None => match &self.lower_bound {
                 Some(lower_bound) => {
+                    self.db_context
+                        .log_debug("finding block with lower bound".to_string());
+
                     // find the first block in the file that might contain
                     // the lower_bound
                     let Some(index_block) = self.block_cache.get_index_block(&self.file_id)? else {
@@ -172,23 +176,30 @@ impl FileBlockIterator {
                     let (mut entry_cursor, mut restart_cursor) =
                         buf_utils::entry_and_restart_cursors(&index_block)?;
 
-                    let (mut left, mut right) =
-                        buf_utils::restart_start_and_end_offsets(&index_block)?;
+                    let mut left: u64 = 0;
+                    let mut right: u64 = (restart_cursor.get_ref().len() as u64) / 4 - 1;
 
                     // binary search the keys in the indexes to find the first block
-                    let mut lowest_restart_offset = right;
+                    let mut lowest_restart_idx = right * 4;
                     while left <= right {
                         let middle = left + (right - left) / 2;
+                        let middle_offset = middle * 4;
                         self.db_context.log_debug(format!(
                             "left: {}, right: {}, middle: {}",
                             left, right, middle
                         ));
 
-                        restart_cursor.set_position(middle);
+                        restart_cursor.set_position(middle_offset);
                         let index_key_offset = buf_utils::read_u32(&mut restart_cursor)?;
+
+                        self.db_context
+                            .log_debug(format!("index_key_offset: {}", index_key_offset));
 
                         entry_cursor.set_position(index_key_offset as u64);
                         let index_key_entry = buf_utils::read_entry(&mut entry_cursor)?;
+
+                        self.db_context
+                            .log_debug(format!("index_key_entry: {:?}", index_key_entry));
 
                         let key = index_key_entry.user_key_suffix();
 
@@ -198,13 +209,13 @@ impl FileBlockIterator {
                                 if left == 0 && right == 0 {
                                     break;
                                 } else {
-                                    right = middle - 4;
+                                    right = middle - 1;
                                 }
                             }
                             Ordering::Equal | Ordering::Greater => {
-                                left = middle + 4;
-                                if middle < lowest_restart_offset {
-                                    lowest_restart_offset = middle;
+                                left = middle + 1;
+                                if middle < lowest_restart_idx {
+                                    lowest_restart_idx = middle;
                                 }
                             }
                         }
@@ -213,7 +224,7 @@ impl FileBlockIterator {
                     // TODO: improve this so that the iterator doesn't need to scan through
                     // data blocks to find the starting point. Reconstruct the index keys
                     // after finding the lowest restart offset
-                    let data_block_id = (lowest_restart_offset / 4)
+                    let data_block_id = lowest_restart_idx
                         * self.db_context.config().sstable_restart_interval() as u64;
 
                     self.set_block(data_block_id as u32)?;
@@ -284,22 +295,27 @@ impl FileBlockIterator {
     fn seek_block_lower_bound(&mut self) -> Result<bool, FileBlockIteratorError> {
         match (&self.lower_bound, &mut self.current_block) {
             (Some(lower_bound), Some(current_block)) => {
+                self.db_context
+                    .log_debug("seek block lower bound".to_string());
+
                 let data_block = current_block.data.data_block_ref();
 
                 let (mut entry_cursor, mut restart_cursor) =
                     buf_utils::entry_and_restart_cursors(&data_block)?;
 
-                let (mut left, mut right) = buf_utils::restart_start_and_end_offsets(&data_block)?;
+                let mut left: u64 = 0;
+                let mut right: u64 = (restart_cursor.get_ref().len() as u64) / 4 - 1;
 
-                let mut lowest_offset_entry = right;
+                let mut lowest_entry_offset: u64 = current_block.keys_len;
                 while left <= right {
                     let middle = left + (right - left) / 2;
+                    let middle_offset = middle * 4;
                     self.db_context.log_debug(format!(
                         "left: {}, right: {}, middle: {}",
                         left, right, middle
                     ));
 
-                    restart_cursor.set_position(middle);
+                    restart_cursor.set_position(middle_offset);
                     let entry_offset = buf_utils::read_u32(&mut restart_cursor)?;
 
                     entry_cursor.set_position(entry_offset as u64);
@@ -313,8 +329,8 @@ impl FileBlockIterator {
                         Ordering::Equal => match self.log_sequence_num.cmp(&log_sequence_num) {
                             Ordering::Less => {
                                 left = middle + 1;
-                                if middle < lowest_offset_entry {
-                                    lowest_offset_entry = middle;
+                                if middle < lowest_entry_offset {
+                                    lowest_entry_offset = entry_offset as u64;
                                 }
                             }
                             Ordering::Equal | Ordering::Greater => {
@@ -334,84 +350,122 @@ impl FileBlockIterator {
                         }
                         Ordering::Greater => {
                             left = middle + 1;
-                            if middle < lowest_offset_entry {
-                                lowest_offset_entry = middle;
+                            if middle < lowest_entry_offset {
+                                lowest_entry_offset = entry_offset as u64;
                             }
                         }
                     }
                 }
 
-                restart_cursor.set_position(lowest_offset_entry);
-                let entry_offset = buf_utils::read_u32(&mut restart_cursor)?;
+                self.db_context
+                    .log_debug(format!("lowest_entry_offset: {}", lowest_entry_offset));
 
-                current_block.key_offset = entry_offset as u64;
+                current_block.key_offset = lowest_entry_offset;
                 Ok(true)
             }
             _ => Ok(false),
         }
     }
 
-    fn build_next_entry(
-        current_block: &mut CurrentBlock,
-    ) -> Result<Option<Arc<LogEntry>>, FileBlockIteratorError> {
+    fn build_next_entry(&mut self) -> Result<Option<Arc<LogEntry>>, FileBlockIteratorError> {
         // rebuild the entry from the prefix compressed entries
+
+        let Some(current_block) = &mut self.current_block else {
+            return Ok(None);
+        };
 
         if current_block.key_offset >= current_block.keys_len {
             return Ok(None);
         }
 
-        match &current_block.current_user_key {
-            Some(current_user_key) => {
-                let mut key_cursor = current_block.key_cursor();
+        loop {
+            let lower_bound = &self.lower_bound;
+            let upper_bound = &self.upper_bound;
 
-                let entry = buf_utils::read_entry(&mut key_cursor)?;
+            match &current_block.current_user_key {
+                Some(current_user_key) => {
+                    let mut key_cursor = current_block.key_cursor();
 
-                // rebuild the user key
-                let shared_user_key = &current_user_key[0..entry.shared_len as usize];
-                let user_key_suffix = entry.user_key_suffix();
-                let mut temp_user_key =
-                    Vec::with_capacity(entry.shared_len as usize + entry.unshared_len as usize);
-                temp_user_key.extend_from_slice(shared_user_key);
-                temp_user_key.extend_from_slice(user_key_suffix);
+                    let entry = buf_utils::read_entry(&mut key_cursor)?;
 
-                let val = entry.value.clone();
-                let log_seq_num = entry.log_seq_num();
-                let entry_type = entry.entry_type();
+                    // rebuild the user key
+                    let shared_user_key = &current_user_key[0..entry.shared_len as usize];
+                    let user_key_suffix = entry.user_key_suffix();
+                    let mut temp_user_key =
+                        Vec::with_capacity(entry.shared_len as usize + entry.unshared_len as usize);
+                    temp_user_key.extend_from_slice(shared_user_key);
+                    temp_user_key.extend_from_slice(user_key_suffix);
 
-                let new_key_offset = key_cursor.position();
+                    let val = entry.value.clone();
+                    let log_seq_num = entry.log_seq_num();
+                    let entry_type = entry.entry_type();
 
-                current_block.current_user_key = Some(temp_user_key.clone());
-                current_block.key_offset = new_key_offset;
+                    let new_key_offset = key_cursor.position();
 
-                Ok(Some(Self::rebuild_entry(
-                    temp_user_key,
-                    val,
-                    log_seq_num,
-                    entry_type,
-                )))
-            }
-            None => {
-                let mut key_cursor = current_block.key_cursor();
+                    current_block.current_user_key = Some(temp_user_key.clone());
+                    current_block.key_offset = new_key_offset;
 
-                let entry = buf_utils::read_entry(&mut key_cursor)?;
+                    if !Self::within_bounds(lower_bound, upper_bound, &temp_user_key) {
+                        continue;
+                    }
 
-                let user_key = entry.user_key_suffix().to_vec();
-                let val = entry.value.clone();
-                let log_seq_num = entry.log_seq_num();
-                let entry_type = entry.entry_type();
-                let new_key_offset = key_cursor.position();
+                    return Ok(Some(Self::rebuild_entry(
+                        temp_user_key,
+                        val,
+                        log_seq_num,
+                        entry_type,
+                    )));
+                }
+                None => {
+                    let mut key_cursor = current_block.key_cursor();
 
-                current_block.current_user_key = Some(user_key.clone());
-                current_block.key_offset = new_key_offset;
+                    let entry = buf_utils::read_entry(&mut key_cursor)?;
 
-                Ok(Some(Self::rebuild_entry(
-                    user_key,
-                    val,
-                    log_seq_num,
-                    entry_type,
-                )))
+                    let user_key = entry.user_key_suffix().to_vec();
+                    let val = entry.value.clone();
+                    let log_seq_num = entry.log_seq_num();
+                    let entry_type = entry.entry_type();
+                    let new_key_offset = key_cursor.position();
+
+                    current_block.current_user_key = Some(user_key.clone());
+                    current_block.key_offset = new_key_offset;
+
+                    if !Self::within_bounds(lower_bound, upper_bound, &user_key) {
+                        continue;
+                    }
+
+                    return Ok(Some(Self::rebuild_entry(
+                        user_key,
+                        val,
+                        log_seq_num,
+                        entry_type,
+                    )));
+                }
             }
         }
+    }
+
+    #[inline]
+    fn within_bounds(
+        lower_bound: &Option<Vec<u8>>,
+        upper_bound: &Option<Vec<u8>>,
+        key: &Vec<u8>,
+    ) -> bool {
+        match lower_bound {
+            Some(lower_bound) => match &lower_bound[..].cmp(key) {
+                Ordering::Greater => return false,
+                _ => {}
+            },
+            None => {}
+        }
+        match upper_bound {
+            Some(upper_bound) => match &upper_bound[..].cmp(key) {
+                Ordering::Less => return false,
+                _ => {}
+            },
+            None => {}
+        }
+        true
     }
 
     #[inline]
@@ -439,9 +493,9 @@ impl FileBlockIterator {
             return Ok(None);
         }
 
-        match &mut self.current_block {
-            Some(current_block) => {
-                let row = Self::build_next_entry(current_block)?;
+        match &self.current_block {
+            Some(_) => {
+                let row = self.build_next_entry()?;
                 Ok(row)
             }
             None => Ok(None),

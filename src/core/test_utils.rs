@@ -84,6 +84,11 @@ pub(crate) enum SampleMemtableBuilder {
 }
 
 impl SampleMemtableBuilder {
+    pub(crate) fn build_log_entries(&self, tc: &TestContext) -> Result<LogEntries, Box<dyn Error>> {
+        Ok(LogEntries {
+            entries: self.build(tc)?.skip_list_iter().collect::<Vec<_>>(),
+        })
+    }
     pub(crate) fn build(&self, tc: &TestContext) -> Result<Arc<Memtable>, Box<dyn Error>> {
         let table = Arc::new(Memtable::new(
             tc.db_context.clone(),
@@ -126,5 +131,15 @@ impl SampleMemtableBuilder {
         }
 
         Ok(table)
+    }
+}
+
+pub struct LogEntries {
+    entries: Vec<Arc<LogEntry>>,
+}
+
+impl LogEntries {
+    pub(crate) fn contains_entry(&self, entry: Arc<LogEntry>) -> bool {
+        self.entries.iter().find(|item| ***item == *entry).is_some()
     }
 }

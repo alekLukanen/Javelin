@@ -24,15 +24,18 @@ fn test_simple_case_file_block_iterator_without_lower_and_upper_bounds()
         .build();
     let tc = TestContext::new_from_config(config);
 
+    let sample_config = SampleMemtableBuilder::IncreasingPuts {
+        size: 25,
+        starting_value: 0,
+        starting_log_sequence_num: 100,
+    };
+    let sample_memtable = sample_config.build(&tc)?;
+    let sample_log_entries = sample_config.build_log_entries(&tc)?;
+
     let immuitable_memtable = Arc::new(ImmutableMemtable::new(
         0,
         tc.db_context.clone(),
-        SampleMemtableBuilder::IncreasingPuts {
-            size: 25,
-            starting_value: 0,
-            starting_log_sequence_num: 100,
-        }
-        .build(&tc)?,
+        sample_memtable,
     )?);
 
     let block_cache = Arc::new(BlockCache::new(
@@ -87,6 +90,8 @@ fn test_simple_case_file_block_iterator_without_lower_and_upper_bounds()
             break;
         };
         println!("entry: {:?}", entry);
+
+        assert!(sample_log_entries.contains_entry(entry));
     }
 
     Ok(())
@@ -105,15 +110,18 @@ fn test_simple_case_file_block_iterator_with_lower_but_no_upper_bound() -> Resul
         .build();
     let tc = TestContext::new_from_config(config);
 
+    let sample_config = SampleMemtableBuilder::IncreasingPuts {
+        size: 25,
+        starting_value: 0,
+        starting_log_sequence_num: 100,
+    };
+    let sample_memtable = sample_config.build(&tc)?;
+    let sample_log_entries = sample_config.build_log_entries(&tc)?;
+
     let immuitable_memtable = Arc::new(ImmutableMemtable::new(
         0,
         tc.db_context.clone(),
-        SampleMemtableBuilder::IncreasingPuts {
-            size: 25,
-            starting_value: 0,
-            starting_log_sequence_num: 100,
-        }
-        .build(&tc)?,
+        sample_memtable,
     )?);
 
     let block_cache = Arc::new(BlockCache::new(
@@ -166,10 +174,11 @@ fn test_simple_case_file_block_iterator_with_lower_but_no_upper_bound() -> Resul
 
     loop {
         let Some(entry) = iter.next()? else {
-            println!("iterator empty");
             break;
         };
         println!("entry: {:?}", entry);
+
+        assert!(sample_log_entries.contains_entry(entry));
     }
 
     Ok(())
