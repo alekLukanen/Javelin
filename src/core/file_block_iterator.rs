@@ -81,20 +81,14 @@ struct CurrentBlock {
     key_offset: u64,
 
     restart_len: u64,
-    restart_offset: u64,
 
     current_user_key: Option<Vec<u8>>,
 }
 
 impl CurrentBlock {
     fn key_cursor(&self) -> Cursor<&[u8]> {
-        let mut cursor = Cursor::new(&self.data.data_block_ref()[..]);
+        let mut cursor = Cursor::new(&self.data.data_block_ref()[8..]);
         cursor.set_position(self.key_offset);
-        cursor
-    }
-    fn offset_cursor(&self) -> Cursor<&[u8]> {
-        let mut cursor = Cursor::new(&self.data.data_block_ref()[..]);
-        cursor.set_position(self.restart_offset);
         cursor
     }
 }
@@ -141,9 +135,7 @@ impl FileBlockIterator {
     fn find_block(&mut self) -> Result<bool, FileBlockIteratorError> {
         match &self.current_block {
             Some(current_block) => {
-                if (current_block.key_offset as usize)
-                    < current_block.data.data_block_ref().len() - 1
-                {
+                if current_block.key_offset < current_block.keys_len {
                     return Ok(true);
                 }
 
@@ -225,7 +217,7 @@ impl FileBlockIterator {
                         * self.db_context.config().sstable_restart_interval() as u64;
 
                     self.set_block(data_block_id as u32)?;
-                    self.seek_block_lower_bound();
+                    self.seek_block_lower_bound()?;
 
                     Ok(true)
                 }
@@ -262,11 +254,15 @@ impl FileBlockIterator {
         // block size - crc32 and compression size
         let max_restarts_pos: u64 = block_size - 5;
 
-        if (max_restarts_pos - max_restarts_pos) % 4 != 0 {
+        if (max_restarts_pos - max_restarts_pos)
+            % self.db_context.config().sstable_restart_interval() as u64
+            != 0
+        {
             return Err(FileBlockIteratorError::RestartLenNotDivisibleByFour);
         }
 
-        let restart_len = (max_restarts_pos - max_keys_pos) / 4;
+        let restart_len = (max_restarts_pos - max_keys_pos)
+            / self.db_context.config().sstable_restart_interval() as u64;
 
         // parse the crc32 and compression
         if !buf_utils::valid_block_crc32(data)? {
@@ -279,7 +275,6 @@ impl FileBlockIterator {
             keys_len: keys_len,
             key_offset: 0,
             restart_len,
-            restart_offset: 0,
             current_user_key: None,
         });
 
@@ -350,77 +345,71 @@ impl FileBlockIterator {
                 let entry_offset = buf_utils::read_u32(&mut restart_cursor)?;
 
                 current_block.key_offset = entry_offset as u64;
-                current_block.restart_offset = lowest_offset_entry;
                 Ok(true)
             }
             _ => Ok(false),
         }
     }
 
-    fn build_next_entry(current_block: &mut CurrentBlock) -> Option<Arc<LogEntry>> {
+    fn build_next_entry(
+        current_block: &mut CurrentBlock,
+    ) -> Result<Option<Arc<LogEntry>>, FileBlockIteratorError> {
         // rebuild the entry from the prefix compressed entries
-        let data_block = current_block.data.data_block_ref();
 
-        if current_block.key_offset > current_block.keys_len {
-            return None;
+        if current_block.key_offset >= current_block.keys_len {
+            return Ok(None);
         }
 
-        match &mut current_block.current_user_key {
+        match &current_block.current_user_key {
             Some(current_user_key) => {
-                current_block.row_idx += 1;
+                let mut key_cursor = current_block.key_cursor();
 
-                let restart_row_idx = data_block
-                    .restarts
-                    .get(current_block.restart_idx)
-                    .expect("expected restart row");
+                let entry = buf_utils::read_entry(&mut key_cursor)?;
 
                 // rebuild the user key
-                let row = data_block.keys.get(current_block.row_idx).unwrap();
-                let log_seq_num = row.log_seq_num();
-                let entry_type = row.entry_type();
+                let shared_user_key = &current_user_key[0..entry.shared_len as usize];
+                let user_key_suffix = entry.user_key_suffix();
+                let mut temp_user_key =
+                    Vec::with_capacity(entry.shared_len as usize + entry.unshared_len as usize);
+                temp_user_key.extend_from_slice(shared_user_key);
+                temp_user_key.extend_from_slice(user_key_suffix);
 
-                if *restart_row_idx as usize != current_block.row_idx {
-                    let shared_user_key = &current_user_key[0..row.shared_len as usize];
-                    let user_key_suffix = row.user_key_suffix();
-                    let mut temp_user_key =
-                        Vec::with_capacity(row.shared_len as usize + row.unshared_len as usize);
-                    temp_user_key.extend_from_slice(shared_user_key);
-                    temp_user_key.extend_from_slice(user_key_suffix);
+                let val = entry.value.clone();
+                let log_seq_num = entry.log_seq_num();
+                let entry_type = entry.entry_type();
 
-                    current_block.current_user_key = Some(temp_user_key.clone());
+                let new_key_offset = key_cursor.position();
 
-                    Some(Self::rebuild_entry(
-                        temp_user_key,
-                        row.value.clone(),
-                        log_seq_num,
-                        entry_type,
-                    ))
-                } else {
-                    let user_key = row.user_key_suffix().to_vec();
+                current_block.current_user_key = Some(temp_user_key.clone());
+                current_block.key_offset = new_key_offset;
 
-                    current_block.current_user_key = Some(user_key.clone());
-
-                    Some(Self::rebuild_entry(
-                        user_key,
-                        row.value.clone(),
-                        log_seq_num,
-                        entry_type,
-                    ))
-                }
+                Ok(Some(Self::rebuild_entry(
+                    temp_user_key,
+                    val,
+                    log_seq_num,
+                    entry_type,
+                )))
             }
             None => {
-                let Some(first_row) = data_block.keys.get(current_block.row_idx) else {
-                    return None;
-                };
+                let mut key_cursor = current_block.key_cursor();
 
-                let user_key = first_row.user_key_suffix().to_vec();
-                let val = first_row.value.clone();
-                let log_seq_num = first_row.log_seq_num();
-                let entry_type = first_row.entry_type();
+                let entry = buf_utils::read_entry(&mut key_cursor)?;
+
+                let user_key = entry.user_key_suffix().to_vec();
+                let val = entry.value.clone();
+                let log_seq_num = entry.log_seq_num();
+                let entry_type = entry.entry_type();
+                let new_key_offset = key_cursor.position();
 
                 current_block.current_user_key = Some(user_key.clone());
+                current_block.key_offset = new_key_offset;
 
-                Some(Self::rebuild_entry(user_key, val, log_seq_num, entry_type))
+                Ok(Some(Self::rebuild_entry(
+                    user_key,
+                    val,
+                    log_seq_num,
+                    entry_type,
+                )))
             }
         }
     }
@@ -452,7 +441,7 @@ impl FileBlockIterator {
 
         match &mut self.current_block {
             Some(current_block) => {
-                let row = Self::build_next_entry(current_block);
+                let row = Self::build_next_entry(current_block)?;
                 Ok(row)
             }
             None => Ok(None),

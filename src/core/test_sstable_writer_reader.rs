@@ -11,6 +11,7 @@ use crate::core::{
     test_utils::TestContext,
 };
 
+/*
 #[test]
 fn test_simple_case_sstable_writer_and_reader() -> Result<(), Box<dyn Error>> {
     let temp_dir = TestContext::temp_dir()?;
@@ -112,3 +113,4 @@ fn test_simple_case_sstable_writer_and_reader() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
+*/

@@ -6,7 +6,7 @@ use crate::core::{
     file_block_iterator::FileBlockIterator,
     iterator::SourceIterator,
     memtable::ImmutableMemtable,
-    sstable_builder::{Block, DataBlock, FooterBlock, SSTableBuilder},
+    sstable_builder::SSTableBuilder,
     sstable_writer::SSTableWriter,
     test_utils::{SampleMemtableBuilder, TestContext},
 };
@@ -54,27 +54,19 @@ fn test_simple_case_file_block_iterator_without_lower_and_upper_bounds()
     )?;
 
     let mut block_idx = 0;
-    let mut index_block: Option<DataBlock> = None;
-    let mut footer_block: Option<FooterBlock> = None;
     loop {
-        match sstable_writer.next_block()? {
-            Some(Block::DataBlock(data_block)) => {
-                println!("adding data block to cache");
-                block_cache.add_data_block(file_id, block_idx, data_block)?;
-                block_idx += 1;
-            }
-            Some(Block::IndexBlock(block)) => {
-                index_block = Some(block);
-            }
-            Some(Block::FooterBlock(block)) => {
-                footer_block = Some(block);
-            }
-            None => {
-                break;
-            }
-        }
+        let Some(data_block) = sstable_writer.next_data_block()? else {
+            break;
+        };
+
+        println!("adding data block to cache");
+        block_cache.add_data_block(file_id, block_idx, data_block)?;
+        block_idx += 1;
     }
-    block_cache.add_sstable(file_id, footer_block.unwrap(), index_block.unwrap())?;
+
+    let index_block = sstable_writer.index_block()?;
+    let footer_block = sstable_writer.footer_block()?;
+    block_cache.add_sstable(file_id, footer_block, index_block)?;
 
     // drop the writer to close the file
     drop(sstable_writer);
@@ -143,27 +135,19 @@ fn test_simple_case_file_block_iterator_with_lower_but_no_upper_bound() -> Resul
     )?;
 
     let mut block_idx = 0;
-    let mut index_block: Option<DataBlock> = None;
-    let mut footer_block: Option<FooterBlock> = None;
     loop {
-        match sstable_writer.next_block()? {
-            Some(Block::DataBlock(data_block)) => {
-                println!("adding data block to cache");
-                block_cache.add_data_block(file_id, block_idx, data_block)?;
-                block_idx += 1;
-            }
-            Some(Block::IndexBlock(block)) => {
-                index_block = Some(block);
-            }
-            Some(Block::FooterBlock(block)) => {
-                footer_block = Some(block);
-            }
-            None => {
-                break;
-            }
-        }
+        let Some(data_block) = sstable_writer.next_data_block()? else {
+            break;
+        };
+
+        println!("adding data block to cache");
+        block_cache.add_data_block(file_id, block_idx, data_block)?;
+        block_idx += 1;
     }
-    block_cache.add_sstable(file_id, footer_block.unwrap(), index_block.unwrap())?;
+
+    let index_block = sstable_writer.index_block()?;
+    let footer_block = sstable_writer.footer_block()?;
+    block_cache.add_sstable(file_id, footer_block, index_block)?;
 
     // drop the writer to close the file
     drop(sstable_writer);
