@@ -64,6 +64,78 @@ fn test_simple_case_with_immutable_memtable_created() -> Result<(), Box<dyn Erro
         starting_value: 0,
         starting_log_sequence_num: 0,
     };
+    let mut sample_entries = sample_config.build_log_entries(&tc)?;
+
+    for entry in &sample_entries.entries {
+        dbase.set(entry.entry.key(), entry.entry.value())?;
+    }
+
+    println!("finished inserting records");
+    println!("wait for sstable to be written to disk...");
+    thread::sleep(time::Duration::from_millis(100));
+
+    // check if the sstable exists
+    let block_cache = BlockCache::new(tc.db_context.clone(), tc.memory_manager.clone());
+
+    let _ = block_cache
+        .get_index_block(&0)?
+        .expect("expected index block");
+
+    let sstable_0_path = file_utils::sstable_path(&config, 0);
+
+    // validate that another file doesn't exist
+    let expected_files = vec![sstable_0_path];
+    for entry in fs::read_dir(config.data_dir())? {
+        let entry = entry?;
+        match expected_files.iter().find(|item| **item == entry.path()) {
+            Some(_) => {}
+            None => {
+                panic!(
+                    "found file which shouldn't exist: {}",
+                    entry.path().display()
+                );
+            }
+        }
+    }
+
+    // validate the entries can be retrieved
+    for entry in &sample_entries.entries.clone() {
+        let Some(_) = dbase.get(&entry.entry.key())? else {
+            println!("entry not found: {:?}", entry);
+            panic!("entry not found");
+        };
+        sample_entries.assert_contains_entry(entry.clone());
+    }
+
+    println!("closing the db");
+    dbase.close()?;
+
+    Ok(())
+}
+
+/*
+#[test]
+fn test_large_case_with_many_immutable_memtables_created() -> Result<(), Box<dyn Error>> {
+    let temp_dir = TestContext::temp_dir()?;
+
+    let config = DBConfigBuilder::new()
+        .sstable_max_block_size(500)
+        .memory_manager_max_memtable_memory_usage(1_000)
+        .data_dir(temp_dir.dir())
+        .logging_enabled(true)
+        .debug_logging_eanbled(true)
+        .build();
+
+    let tc = TestContext::new_from_config(config.clone());
+    let dbase = DB::new(config.clone());
+
+    println!("inserting records");
+
+    let sample_config = SampleMemtableBuilder::IncreasingPuts {
+        size: 5000,
+        starting_value: 0,
+        starting_log_sequence_num: 0,
+    };
     let sample_entries = sample_config.build_log_entries(&tc)?;
 
     for entry in &sample_entries.entries {
@@ -103,3 +175,4 @@ fn test_simple_case_with_immutable_memtable_created() -> Result<(), Box<dyn Erro
 
     Ok(())
 }
+*/

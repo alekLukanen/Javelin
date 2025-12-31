@@ -1,10 +1,13 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use super::db_context::DBContext;
 
 #[derive(Clone)]
 pub struct SSTableVersion {
-    pub(crate) sstable_levels: Vec<SSTableLevel>,
+    pub(crate) sstable_levels: HashMap<usize, SSTableLevel>,
 }
 
 impl SSTableVersion {
@@ -18,7 +21,7 @@ impl SSTableVersion {
 impl Default for SSTableVersion {
     fn default() -> Self {
         SSTableVersion {
-            sstable_levels: Vec::new(),
+            sstable_levels: HashMap::new(),
         }
     }
 }
@@ -40,11 +43,14 @@ impl Manifest {
     pub fn new(db_context: Arc<DBContext>) -> Manifest {
         // construct the sstable levels
         let config_num_levels = db_context.config().manifest_num_levels();
-        let mut sstable_levels = Vec::with_capacity(config_num_levels);
-        for _ in 0..config_num_levels {
-            sstable_levels.push(SSTableLevel {
-                sstables: HashSet::new(),
-            })
+        let mut sstable_levels = HashMap::with_capacity(config_num_levels);
+        for idx in 0..config_num_levels {
+            sstable_levels.insert(
+                idx,
+                SSTableLevel {
+                    sstables: HashSet::new(),
+                },
+            );
         }
 
         Manifest {
@@ -64,7 +70,7 @@ impl Manifest {
     pub fn finalize_flushing_memtable(&mut self, memtable_id: usize, file_num: u64) {
         let mut sv = self.sstable_version.duplicate();
         sv.sstable_levels
-            .get_mut(0)
+            .get_mut(&0)
             .expect("expected level 0")
             .sstables
             .insert(file_num);

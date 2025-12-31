@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, error::Error, fmt::Display, sync::Arc};
+use std::{cmp::Ordering, collections::HashMap, error::Error, fmt::Display, sync::Arc};
 
 use crate::core::{
     block_cache::BlockCache,
@@ -35,6 +35,11 @@ impl From<IteratorError> for MergeSortIteratorError {
     }
 }
 
+struct SSTableIterRefs {
+    iters: Vec<Option<Box<dyn SourceIterator>>>,
+    loaded: bool,
+}
+
 pub struct MergeSortIterator {
     read_state: Arc<ReadState>,
     block_cache: Arc<BlockCache>,
@@ -45,8 +50,7 @@ pub struct MergeSortIterator {
 
     memtable_iters: Vec<Box<dyn SourceIterator>>,
 
-    sstable_level_iters: Vec<Vec<Box<dyn SourceIterator>>>,
-    sstable_level_iters_loaded: Vec<bool>,
+    sstable_level_iters: HashMap<usize, SSTableIterRefs>,
 
     current_entry: Option<Arc<LogEntry>>,
 }
@@ -74,15 +78,23 @@ impl MergeSortIterator {
         memtable_iters.push(active_memtable_iter);
         memtable_iters.extend(immutable_memtable_iters);
 
-        let sstable_level_iters_loaded =
-            vec![false; read_state.sstable_version.sstable_levels.len()];
+        let mut sstable_level_iters =
+            HashMap::with_capacity(read_state.sstable_version.sstable_levels.len());
+        for idx in read_state.sstable_version.sstable_levels.keys() {
+            sstable_level_iters.insert(
+                *idx,
+                SSTableIterRefs {
+                    iters: Vec::new(),
+                    loaded: false,
+                },
+            );
+        }
 
         MergeSortIterator {
             read_state,
             block_cache,
             memtable_iters: memtable_iters,
-            sstable_level_iters: Vec::new(),
-            sstable_level_iters_loaded,
+            sstable_level_iters,
             current_entry: None,
             log_sequence_num,
             lower_bound,
@@ -186,18 +198,17 @@ impl MergeSortIterator {
         if self.upper_bound == self.lower_bound && primary_entry.is_some() {
             // free up resources
             self.memtable_iters = Vec::new();
-            self.sstable_level_iters = Vec::new();
-            self.sstable_level_iters_loaded = vec![true; self.sstable_level_iters_loaded.len()];
+            self.clear_sstable_iters();
 
             self.current_entry = primary_entry.clone();
             return Ok(primary_entry);
         } else if self.upper_bound == self.lower_bound
             && self
-                .sstable_level_iters_loaded
-                .iter()
-                .filter(|item| **item == true)
+                .sstable_level_iters
+                .values()
+                .filter(|item| item.loaded == true)
                 .count()
-                == self.sstable_level_iters_loaded.len()
+                == self.sstable_level_iters.len()
         {
             self.current_entry = primary_entry.clone();
             return Ok(primary_entry);
@@ -216,17 +227,18 @@ impl MergeSortIterator {
         Ok(primary_entry)
     }
 
-    fn get_sstable_iter_next(&mut self, level: usize) -> Option<Arc<LogEntry>> {
-        let Some(level_loaded) = self.sstable_level_iters_loaded.get(level) else {
+    fn get_sstable_iter_next(&mut self, level: &usize) -> Option<Arc<LogEntry>> {
+        let Some(level_iters) = self.sstable_level_iters.get(level) else {
             return None;
         };
-
-        if !level_loaded {}
+        if !level_iters.loaded {}
 
         None
     }
 
-    fn load_sstable_iters(&mut self, level: usize) -> Result<(), MergeSortIteratorError> {
+    fn load_sstable_iters(&mut self, level: &usize) -> Result<(), MergeSortIteratorError> {
+        // TODO: get a list of all level-0 sstables that might contain the key
+
         let sstables = &self
             .read_state
             .sstable_version
@@ -235,6 +247,13 @@ impl MergeSortIterator {
             .unwrap()
             .sstables;
         Ok(())
+    }
+
+    fn clear_sstable_iters(&mut self) {
+        self.sstable_level_iters.iter_mut().for_each(|(_, item)| {
+            item.iters = Vec::new();
+            item.loaded = true;
+        })
     }
 }
 

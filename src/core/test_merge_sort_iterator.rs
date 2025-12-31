@@ -1,4 +1,4 @@
-use std::{error::Error, sync::Arc};
+use std::{collections::HashMap, error::Error, sync::Arc};
 
 use crate::core::{
     block_cache::BlockCache,
@@ -37,7 +37,7 @@ fn test_simple_case_memtables_only() -> Result<(), Box<dyn Error>> {
     let read_state = Arc::new(ReadState {
         memtables: vec![immuitable_memtable],
         sstable_version: Arc::new(SSTableVersion {
-            sstable_levels: Vec::new(),
+            sstable_levels: HashMap::new(),
         }),
     });
 
@@ -115,7 +115,7 @@ fn test_simple_case_memtables_only_with_bounds() -> Result<(), Box<dyn Error>> {
     let read_state = Arc::new(ReadState {
         memtables: vec![immuitable_memtable],
         sstable_version: Arc::new(SSTableVersion {
-            sstable_levels: Vec::new(),
+            sstable_levels: HashMap::new(),
         }),
     });
 
@@ -193,7 +193,7 @@ fn test_simple_case_memtables_only_with_equal_bounds() -> Result<(), Box<dyn Err
     let read_state = Arc::new(ReadState {
         memtables: vec![immuitable_memtable],
         sstable_version: Arc::new(SSTableVersion {
-            sstable_levels: Vec::new(),
+            sstable_levels: HashMap::new(),
         }),
     });
 
