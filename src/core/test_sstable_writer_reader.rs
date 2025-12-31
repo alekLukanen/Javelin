@@ -113,7 +113,7 @@ fn test_large_case_sstable_reader_get_block() -> Result<(), Box<dyn Error>> {
     let tc = TestContext::new_from_config(config);
 
     let sample_config = SampleMemtableBuilder::IncreasingPuts {
-        size: 1000,
+        size: 5000,
         starting_value: 0,
         starting_log_sequence_num: 100,
     };
@@ -147,7 +147,7 @@ fn test_large_case_sstable_reader_get_block() -> Result<(), Box<dyn Error>> {
     // - data
     // - index
     // - footer
-    assert_eq!(32, data_blocks.len());
+    assert_eq!(157, data_blocks.len());
 
     let expected_index_block_data = sstable_writer.index_block()?;
     let expected_footer_block_data = sstable_writer.footer_block()?;
@@ -173,7 +173,7 @@ fn test_large_case_sstable_reader_get_block() -> Result<(), Box<dyn Error>> {
     let index = Arc::new(sstable_reader.index_block()?);
 
     // check each of the data blocks to make sure they're equal to what was written
-    for idx in 0..32 {
+    for idx in 0..157 {
         let data_block = sstable_reader.get_block(&idx, index.as_ref())?;
 
         assert_eq!(

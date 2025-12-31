@@ -129,7 +129,7 @@ impl SSTableWriter {
         match block {
             Block::DataBlock(data_block) => {
                 self.db_context.log_debug(format!(
-                    "writing data block id={}",
+                    "[SSTableWriter] writing data block id={}",
                     self.index_block_entries.len()
                 ));
                 let data =
@@ -147,7 +147,8 @@ impl SSTableWriter {
                 Ok(data)
             }
             Block::IndexBlock(index_block) => {
-                self.db_context.log_debug("writing index block".to_string());
+                self.db_context
+                    .log_debug("[SSTableWriter] writing index block".to_string());
                 let data =
                     self.write_data_or_index_block(&index_block.keys, &index_block.restarts)?;
                 self.index_size = data.len();
@@ -155,7 +156,7 @@ impl SSTableWriter {
             }
             Block::FooterBlock(footer_block) => {
                 self.db_context
-                    .log_debug("writing footer block".to_string());
+                    .log_debug("[SSTableWriter] writing footer block".to_string());
                 let data = self.write_footer_block(
                     &footer_block.magic,
                     &footer_block.data_block_handle,
@@ -188,7 +189,7 @@ impl SSTableWriter {
         self.file.write_all(&data)?;
 
         self.db_context.log_debug(format!(
-            "footer: data.len()={}, data_block_handle={:?}, index_block_handle={:?}",
+            "[SSTableWriter] footer: data.len()={}, data_block_handle={:?}, index_block_handle={:?}",
             data.len(),
             data_block_handle,
             index_block_handle
@@ -232,12 +233,6 @@ impl SSTableWriter {
         data.extend_from_slice(&crc32.to_le_bytes());
 
         self.file.write_all(&data)?;
-
-        self.db_context.log_debug(format!(
-            "data.len() = {}, expected size = {}",
-            data.len(),
-            size,
-        ));
 
         assert_eq!(size, data.len());
 

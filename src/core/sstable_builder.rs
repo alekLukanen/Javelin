@@ -230,10 +230,6 @@ impl SSTableBuilder {
                 compressed_entries.push(next_compressed_entry);
             }
 
-            // break when the block size is large enough
-            //if block_size as usize > self.max_block_size {
-            //    break;
-            //}
             restart_idx += 1;
         }
 

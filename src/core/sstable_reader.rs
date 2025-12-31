@@ -80,16 +80,10 @@ impl From<BufUtilsError> for SSTableReaderError {
 
 ///////////////////////////////////////////////////
 
-struct BlockContents {
-    keys: Vec<PrefixCompressedEntry>,
-    restarts: Vec<u32>,
-}
-
 pub struct SSTableReader {
     db_context: Arc<DBContext>,
 
     file: File,
-
     footer: Option<FooterBlock>,
 }
 
@@ -183,8 +177,6 @@ impl SSTableReader {
         if !buf_utils::valid_block_crc32(&buf)? {
             return Err(SSTableReaderError::InvalidCRC32);
         }
-
-        self.db_context.log_debug("read data block".to_string());
 
         Ok(buf)
     }
