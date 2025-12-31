@@ -98,7 +98,6 @@ pub struct FileBlockIterator {
     db_context: Arc<DBContext>,
     block_cache: Arc<BlockCache>,
 
-    level: usize,
     file_id: u64,
     log_sequence_num: u64,
     lower_bound: Option<Vec<u8>>,
@@ -112,7 +111,6 @@ impl FileBlockIterator {
     pub fn new(
         db_context: Arc<DBContext>,
         block_cache: Arc<BlockCache>,
-        level: usize,
         file_id: u64,
         log_sequence_num: u64,
         lower_bound: Option<Vec<u8>>,
@@ -121,7 +119,6 @@ impl FileBlockIterator {
         FileBlockIterator {
             db_context,
             block_cache,
-            level,
             file_id,
 
             log_sequence_num,

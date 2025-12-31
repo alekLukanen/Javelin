@@ -44,7 +44,6 @@ fn test_simple_case_file_block_iterator_without_lower_and_upper_bounds()
 
     // file attributes
     let file_id = 1;
-    let level = 0;
 
     // create the table writer
     let mut sstable_path = PathBuf::from(temp_dir.dir());
@@ -78,7 +77,6 @@ fn test_simple_case_file_block_iterator_without_lower_and_upper_bounds()
     let mut iter = FileBlockIterator::new(
         tc.db_context.clone(),
         block_cache.clone(),
-        level,
         file_id,
         log_sequence_num,
         None,
@@ -134,7 +132,6 @@ fn test_simple_case_file_block_iterator_with_lower_but_no_upper_bound() -> Resul
 
     // file attributes
     let file_id = 1;
-    let level = 0;
 
     // create the table writer
     let mut sstable_path = PathBuf::from(temp_dir.dir());
@@ -171,7 +168,6 @@ fn test_simple_case_file_block_iterator_with_lower_but_no_upper_bound() -> Resul
     let mut iter = FileBlockIterator::new(
         tc.db_context.clone(),
         block_cache.clone(),
-        level,
         file_id,
         log_sequence_num,
         lower_bound.clone(),
@@ -227,7 +223,6 @@ fn test_simple_case_file_block_iterator_with_lower_and_upper_bound() -> Result<(
 
     // file attributes
     let file_id = 1;
-    let level = 0;
 
     // create the table writer
     let mut sstable_path = PathBuf::from(temp_dir.dir());
@@ -264,7 +259,6 @@ fn test_simple_case_file_block_iterator_with_lower_and_upper_bound() -> Result<(
     let mut iter = FileBlockIterator::new(
         tc.db_context.clone(),
         block_cache.clone(),
-        level,
         file_id,
         log_sequence_num,
         lower_bound.clone(),

@@ -49,6 +49,7 @@ fn test_simple_case_memtables_only() -> Result<(), Box<dyn Error>> {
     let log_sequence_num: u64 = 200;
 
     let mut iter = MergeSortIterator::new(
+        tc.db_context.clone(),
         active_memtable.clone(),
         read_state.clone(),
         block_cache.clone(),
@@ -96,9 +97,9 @@ fn test_simple_case_memtables_only_with_bounds() -> Result<(), Box<dyn Error>> {
     let tc = TestContext::new_from_config(config);
 
     let active_memtable = SampleMemtableBuilder::IncreasingPuts {
-        size: 10,
+        size: 5,
         starting_value: 0,
-        starting_log_sequence_num: 0,
+        starting_log_sequence_num: 100,
     }
     .build(&tc)?;
     let immuitable_memtable = Arc::new(ImmutableMemtable::new(
@@ -107,7 +108,7 @@ fn test_simple_case_memtables_only_with_bounds() -> Result<(), Box<dyn Error>> {
         SampleMemtableBuilder::IncreasingPuts {
             size: 10,
             starting_value: 5,
-            starting_log_sequence_num: 100,
+            starting_log_sequence_num: 0,
         }
         .build(&tc)?,
     )?);
@@ -127,6 +128,7 @@ fn test_simple_case_memtables_only_with_bounds() -> Result<(), Box<dyn Error>> {
     let log_sequence_num: u64 = 200;
 
     let mut iter = MergeSortIterator::new(
+        tc.db_context.clone(),
         active_memtable.clone(),
         read_state.clone(),
         block_cache.clone(),
@@ -142,7 +144,7 @@ fn test_simple_case_memtables_only_with_bounds() -> Result<(), Box<dyn Error>> {
                 key: i.to_be_bytes().to_vec(),
                 val: i.to_be_bytes().to_vec(),
             },
-            i,
+            100 + i,
         ));
     }
     for (idx, i) in (5..8u64).enumerate() {
@@ -151,7 +153,7 @@ fn test_simple_case_memtables_only_with_bounds() -> Result<(), Box<dyn Error>> {
                 key: i.to_be_bytes().to_vec(),
                 val: i.to_be_bytes().to_vec(),
             },
-            105 + idx as u64,
+            idx as u64,
         ));
     }
 
@@ -205,6 +207,7 @@ fn test_simple_case_memtables_only_with_equal_bounds() -> Result<(), Box<dyn Err
     let log_sequence_num: u64 = 200;
 
     let mut iter = MergeSortIterator::new(
+        tc.db_context.clone(),
         active_memtable.clone(),
         read_state.clone(),
         block_cache.clone(),

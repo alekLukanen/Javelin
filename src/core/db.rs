@@ -180,6 +180,7 @@ impl DB {
         drop(inner_guard);
 
         let mut iter = MergeSortIterator::new(
+            self.db_context.clone(),
             active_memtable,
             read_state,
             block_cache,
