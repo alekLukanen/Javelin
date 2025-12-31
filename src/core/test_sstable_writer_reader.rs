@@ -27,6 +27,7 @@ fn test_simple_case_sstable_writer_and_reader() -> Result<(), Box<dyn Error>> {
     let table = Arc::new(memtable::Memtable::new(
         tc.db_context.clone(),
         tc.memory_manager.clone(),
+        10_000,
     ));
 
     let mut key_values: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();

@@ -1,7 +1,9 @@
 use std::{error::Error, fs, thread, time};
 
 use crate::core::{
-    block_cache::BlockCache, file_utils, sstable_reader::SSTableReader, test_utils::TestContext,
+    block_cache::BlockCache,
+    file_utils,
+    test_utils::{SampleMemtableBuilder, TestContext},
 };
 
 use super::{db::DB, db_config::DBConfigBuilder};
@@ -41,7 +43,7 @@ fn test_simple_case_no_immutable_memtable_created() -> Result<(), Box<dyn Error>
 }
 
 #[test]
-fn test_large_case_with_immutable_memtable_created() -> Result<(), Box<dyn Error>> {
+fn test_simple_case_with_immutable_memtable_created() -> Result<(), Box<dyn Error>> {
     let temp_dir = TestContext::temp_dir()?;
 
     let config = DBConfigBuilder::new()
@@ -57,14 +59,19 @@ fn test_large_case_with_immutable_memtable_created() -> Result<(), Box<dyn Error
 
     println!("inserting records");
 
-    // 8 * 100 -> 1 active + 7 immutable
-    for i in 0..100 as u64 {
-        let key = i.to_be_bytes().to_vec();
-        dbase.set(key.clone(), key.clone())?;
+    let sample_config = SampleMemtableBuilder::IncreasingPuts {
+        size: 100,
+        starting_value: 0,
+        starting_log_sequence_num: 0,
+    };
+    let sample_entries = sample_config.build_log_entries(&tc)?;
+
+    for entry in &sample_entries.entries {
+        dbase.set(entry.entry.key(), entry.entry.value())?;
     }
 
+    println!("finished inserting records");
     println!("wait for sstable to be written to disk...");
-
     thread::sleep(time::Duration::from_millis(100));
 
     // check if the sstable exists

@@ -54,13 +54,12 @@ pub struct Memtable {
 }
 
 impl Memtable {
-    pub fn new(db_context: Arc<DBContext>, memory: Arc<MemoryManager>) -> Memtable {
-        let record = memory.new_record(
-            db_context
-                .config()
-                .memory_manager_max_memtable_memory_usage(),
-            true,
-        );
+    pub fn new(
+        db_context: Arc<DBContext>,
+        memory: Arc<MemoryManager>,
+        max_memory_usage: usize,
+    ) -> Memtable {
+        let record = memory.new_record(max_memory_usage, true);
         Memtable {
             skip_list: SkipList::new(
                 db_context.config().memtable_probability(),

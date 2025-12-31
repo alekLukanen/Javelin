@@ -93,6 +93,7 @@ impl SampleMemtableBuilder {
         let table = Arc::new(Memtable::new(
             tc.db_context.clone(),
             tc.memory_manager.clone(),
+            10_000_000,
         ));
 
         match self {
@@ -103,13 +104,14 @@ impl SampleMemtableBuilder {
             } => {
                 for i in *starting_value..*size as u64 {
                     let key = i.to_be_bytes().to_vec();
-                    table.insert(Arc::new(LogEntry::new(
+                    let inserted = table.insert(Arc::new(LogEntry::new(
                         Entry::Put {
                             key: key.clone(),
                             val: key.clone(),
                         },
                         starting_log_sequence_num + i,
                     )))?;
+                    assert!(inserted);
                 }
             }
             Self::DecreasingPuts {
@@ -119,13 +121,14 @@ impl SampleMemtableBuilder {
             } => {
                 for i in (*starting_value..*size as u64).rev() {
                     let key = i.to_be_bytes().to_vec();
-                    table.insert(Arc::new(LogEntry::new(
+                    let inserted = table.insert(Arc::new(LogEntry::new(
                         Entry::Put {
                             key: key.clone(),
                             val: key.clone(),
                         },
                         starting_log_sequence_num + i,
                     )))?;
+                    assert!(inserted);
                 }
             }
         }
@@ -135,8 +138,8 @@ impl SampleMemtableBuilder {
 }
 
 pub struct LogEntries {
-    entries: Vec<Arc<LogEntry>>,
-    entries_asserted: Vec<bool>,
+    pub(crate) entries: Vec<Arc<LogEntry>>,
+    pub(crate) entries_asserted: Vec<bool>,
 }
 
 impl LogEntries {

@@ -295,7 +295,10 @@ impl BlockCache {
 
         let file_path = file_utils::sstable_path(self.db_context.config(), *file_id);
 
-        let mut sstable_reader = SSTableReader::new(self.db_context.clone(), file_path)?;
+        let mut sstable_reader = match SSTableReader::new(self.db_context.clone(), file_path) {
+            Ok(val) => val,
+            Err(err) => return Err(BlockCacheError::FailedCreatingSSTableReader(err)),
+        };
         let footer = sstable_reader.footer_block()?;
         let index = sstable_reader.index_block()?;
         let meta = sstable_reader.meta_block()?;
@@ -380,6 +383,7 @@ pub enum BlockCacheError {
     MemoryRecordError(MemoryRecordError),
     SSTableReaderError(SSTableReaderError),
     IndexBlockNotFound(u64, u32),
+    FailedCreatingSSTableReader(SSTableReaderError),
 }
 
 impl Display for BlockCacheError {
@@ -394,6 +398,7 @@ impl Display for BlockCacheError {
                 "IndexBlockNotFound: file_id={}, block_id={}",
                 file_id, block_id
             ),
+            Self::FailedCreatingSSTableReader(e) => write!(f, "FailedCreatingSSTableReader: {}", e),
         }
     }
 }
@@ -406,6 +411,7 @@ impl Error for BlockCacheError {
             Self::MemoryRecordError(e) => Some(e),
             Self::SSTableReaderError(e) => Some(e),
             Self::IndexBlockNotFound(_, _) => None,
+            Self::FailedCreatingSSTableReader(e) => Some(e),
         }
     }
 }

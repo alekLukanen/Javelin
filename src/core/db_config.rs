@@ -96,6 +96,11 @@ impl DBConfigBuilder {
             },
         }
     }
+    pub fn new_from_config(config: &DBConfig) -> DBConfigBuilder {
+        DBConfigBuilder {
+            config: config.clone(),
+        }
+    }
 
     pub fn build(self) -> DBConfig {
         if self.config.memory_manager_max_memtable_memory_usage

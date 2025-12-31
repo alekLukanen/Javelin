@@ -125,7 +125,13 @@ impl DB {
 
         let db_backend = Arc::new(DBBackend {
             db_inner: Mutex::new(DBInner {
-                active_memtable: Arc::new(Memtable::new(db_context.clone(), memory.clone())),
+                active_memtable: Arc::new(Memtable::new(
+                    db_context.clone(),
+                    memory.clone(),
+                    db_context
+                        .config()
+                        .memory_manager_max_memtable_memory_usage(),
+                )),
                 read_state: Arc::new(ReadState {
                     memtables: Vec::new(),
                     sstable_version: manifest.sstable_version(),
@@ -256,6 +262,10 @@ impl DBBackend {
         guard.manifest.add_flushing_memtable(mt_id);
         drop(guard);
 
+        db_backend
+            .db_context
+            .log_debug(format!("[DBBackend] flusing memetable {}", mt_id));
+
         // convert the immutable memtable to an sstable
         // and write the blocks to the block cache
         let file_num = db_backend.wal.incr_file_sequence_num();
@@ -278,16 +288,14 @@ impl DBBackend {
         // write the data to the sstable and the block cache
         let mut block_id: u32 = 0;
         loop {
-            let Some(_) = sstable_writer.next_data_block()? else {
+            let Some(data_block) = sstable_writer.next_data_block()? else {
                 break;
             };
-            /*
             db_backend
                 .db_inner
                 .lock()?
                 .block_cache
                 .add_data_block(file_num, block_id, data_block)?;
-            */
             if block_id == u32::MAX {
                 todo!("handle max block id");
             }
@@ -370,11 +378,16 @@ impl DBInner {
 
     fn create_new_active_memtable(&mut self) -> Result<(), DBError> {
         self.db_context
-            .log_info("[Memtable] Creating new active memtable".to_string());
+            .log_info("[DBInner] Creating new active memtable".to_string());
 
         let old = self.active_memtable.clone();
-        self.active_memtable =
-            Arc::new(Memtable::new(self.db_context.clone(), self.memory.clone()));
+        self.active_memtable = Arc::new(Memtable::new(
+            self.db_context.clone(),
+            self.memory.clone(),
+            self.db_context
+                .config()
+                .memory_manager_max_memtable_memory_usage(),
+        ));
 
         let im_id = self
             .immutable_memtable_idx

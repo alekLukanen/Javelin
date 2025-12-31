@@ -19,6 +19,7 @@ fn test_build_from_immutable_memtable() -> Result<(), Box<dyn Error>> {
     let table = Arc::new(memtable::Memtable::new(
         tc.db_context.clone(),
         tc.memory_manager.clone(),
+        10_000,
     ));
 
     let mut key_values: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
