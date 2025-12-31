@@ -67,8 +67,9 @@ fn test_simple_case_file_block_iterator_without_lower_and_upper_bounds()
     }
 
     let index_block = sstable_writer.index_block()?;
+    let meta_block = sstable_writer.meta_data_block()?;
     let footer_block = sstable_writer.footer_block()?;
-    block_cache.add_sstable(file_id, footer_block, index_block)?;
+    block_cache.add_sstable(file_id, footer_block, index_block, meta_block)?;
 
     // drop the writer to close the file
     drop(sstable_writer);
@@ -156,8 +157,9 @@ fn test_simple_case_file_block_iterator_with_lower_but_no_upper_bound() -> Resul
     }
 
     let index_block = sstable_writer.index_block()?;
+    let meta_block = sstable_writer.meta_data_block()?;
     let footer_block = sstable_writer.footer_block()?;
-    block_cache.add_sstable(file_id, footer_block, index_block)?;
+    block_cache.add_sstable(file_id, footer_block, index_block, meta_block)?;
 
     // drop the writer to close the file
     drop(sstable_writer);
@@ -248,8 +250,9 @@ fn test_simple_case_file_block_iterator_with_lower_and_upper_bound() -> Result<(
     }
 
     let index_block = sstable_writer.index_block()?;
+    let meta_block = sstable_writer.meta_data_block()?;
     let footer_block = sstable_writer.footer_block()?;
-    block_cache.add_sstable(file_id, footer_block, index_block)?;
+    block_cache.add_sstable(file_id, footer_block, index_block, meta_block)?;
 
     // drop the writer to close the file
     drop(sstable_writer);

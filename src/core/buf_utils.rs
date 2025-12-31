@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::Read;
 use std::io::{self, Cursor};
 
-use crate::core::sstable_builder::{BlockHandle, PrefixCompressedEntry};
+use crate::core::sstable_builder::{BlockHandle, MetaDataBlock, PrefixCompressedEntry};
 
 const CRC32: Crc<u32> = Crc::<u32>::new(&CRC_32_CKSUM);
 
@@ -121,7 +121,7 @@ pub(crate) fn entry_and_restart_cursors(
     // block size - crc32 and compression size
     let max_restarts_pos: u64 = block_size - 5;
 
-    let entry_cursor = Cursor::new(&buf[8..max_restarts_pos as usize]);
+    let entry_cursor = Cursor::new(&buf[8..max_keys_pos as usize]);
     let restart_cursor = Cursor::new(&buf[max_keys_pos as usize..max_restarts_pos as usize]);
 
     Ok((entry_cursor, restart_cursor))
@@ -153,6 +153,15 @@ pub(crate) fn read_entry(
     };
 
     Ok(entry)
+}
+
+#[inline]
+pub(crate) fn decode_meta_data(buf: &Vec<u8>) -> Result<MetaDataBlock, BufUtilsError> {
+    let mut cursor = Cursor::new(&buf[..]);
+    let meta = MetaDataBlock {
+        num_blocks: read_u32(&mut cursor)?,
+    };
+    Ok(meta)
 }
 
 #[inline]

@@ -9,7 +9,10 @@ use std::{
     },
 };
 
-use crate::core::sstable_reader::{SSTableReader, SSTableReaderError};
+use crate::core::{
+    file_utils,
+    sstable_reader::{SSTableReader, SSTableReaderError},
+};
 
 use super::{
     db_context::DBContext,
@@ -22,6 +25,7 @@ pub struct SSTable {
     id: u64,
     footer: Arc<Vec<u8>>,
     index: Arc<Vec<u8>>,
+    meta: Arc<Vec<u8>>,
 }
 
 pub struct FileBlockData {
@@ -92,8 +96,14 @@ impl BlockCacheShard {
         record: MemoryRecord,
     ) -> (Option<DataBlockHandle>, bool) {
         let key = (file_id.clone(), block_id.clone());
-        if self.data_blocks.contains_key(&key) {
-            return (None, false);
+
+        if let Some(block) = self.data_blocks.get(&key) {
+            return (
+                Some(DataBlockHandle {
+                    entry: block.clone(),
+                }),
+                false,
+            );
         }
 
         let cached_data_block = Arc::new(CachedDataBlock {
@@ -191,6 +201,7 @@ impl BlockCache {
         file_id: u64,
         footer: Vec<u8>,
         index: Vec<u8>,
+        meta: Vec<u8>,
     ) -> Result<(), BlockCacheError> {
         self.inner.sstables.lock()?.insert(
             file_id.clone(),
@@ -198,6 +209,7 @@ impl BlockCache {
                 id: file_id,
                 footer: Arc::new(footer),
                 index: Arc::new(index),
+                meta: Arc::new(meta),
             },
         );
         Ok(())
@@ -226,6 +238,8 @@ impl BlockCache {
         file_id: &u64,
         block_id: &u32,
     ) -> Result<Option<DataBlockHandle>, BlockCacheError> {
+        self.load_sstable_if_not_found(file_id)?;
+
         let shard_idx = (*file_id as usize) % self.inner.num_shards;
         let handle = self
             .inner
@@ -234,39 +248,62 @@ impl BlockCache {
             .expect("expected shard")
             .lock()?
             .get_data_block(file_id, block_id);
-        Ok(handle)
+        match handle {
+            Some(_) => Ok(handle),
+            None => {
+                let Some(index_block) = self.get_index_block(file_id)? else {
+                    return Err(BlockCacheError::IndexBlockNotFound(*file_id, *block_id));
+                };
+
+                let file_path = file_utils::sstable_path(self.db_context.config(), *file_id);
+                let data_block = SSTableReader::new(self.db_context.clone(), file_path)?
+                    .get_block(block_id, index_block.as_ref())?;
+
+                let (handle, _) =
+                    self.add_data_block(file_id.clone(), block_id.clone(), data_block)?;
+                Ok(handle)
+            }
+        }
     }
 
     pub fn get_index_block(&self, file_id: &u64) -> Result<Option<Arc<Vec<u8>>>, BlockCacheError> {
         self.load_sstable_if_not_found(file_id)?;
 
-        self.db_context.log_debug("getting index block".to_string());
         match self.inner.sstables.lock()?.get(file_id) {
             Some(sstable) => Ok(Some(sstable.index.clone())),
             None => Ok(None),
         }
     }
 
+    pub fn get_meta_block(&self, file_id: &u64) -> Result<Option<Arc<Vec<u8>>>, BlockCacheError> {
+        self.load_sstable_if_not_found(file_id)?;
+
+        match self.inner.sstables.lock()?.get(file_id) {
+            Some(sstable) => Ok(Some(sstable.meta.clone())),
+            None => Ok(None),
+        }
+    }
+
     fn load_sstable_if_not_found(&self, file_id: &u64) -> Result<(), BlockCacheError> {
-        // TODO: improve this so that the guard isn't held while
-        // the sstable is being read
+        // TODO: improve this method so that all callers wait on the same result
+
         let has_sstable = self.inner.sstables.lock()?.get(file_id).is_some();
 
         if has_sstable {
             return Ok(());
         }
 
-        let mut file_path = PathBuf::new();
-        file_path.push(self.db_context.config().data_dir());
-        file_path.push(format!("{}.dat", file_id));
+        let file_path = file_utils::sstable_path(self.db_context.config(), *file_id);
 
         let mut sstable_reader = SSTableReader::new(self.db_context.clone(), file_path)?;
         let footer = sstable_reader.footer_block()?;
         let index = sstable_reader.index_block()?;
+        let meta = sstable_reader.meta_block()?;
         let sstable = SSTable {
             id: file_id.clone(),
             footer: Arc::new(footer),
             index: Arc::new(index),
+            meta: Arc::new(meta),
         };
 
         self.inner.sstables.lock()?.insert(*file_id, sstable);
@@ -342,6 +379,7 @@ pub enum BlockCacheError {
     MutexLockFailed(String),
     MemoryRecordError(MemoryRecordError),
     SSTableReaderError(SSTableReaderError),
+    IndexBlockNotFound(u64, u32),
 }
 
 impl Display for BlockCacheError {
@@ -351,6 +389,11 @@ impl Display for BlockCacheError {
             Self::MutexLockFailed(e) => write!(f, "MutexLockFailed: {}", e),
             Self::MemoryRecordError(e) => write!(f, "MemoryRecordError: {}", e),
             Self::SSTableReaderError(e) => write!(f, "SSTableReaderError: {}", e),
+            Self::IndexBlockNotFound(file_id, block_id) => write!(
+                f,
+                "IndexBlockNotFound: file_id={}, block_id={}",
+                file_id, block_id
+            ),
         }
     }
 }
@@ -362,6 +405,7 @@ impl Error for BlockCacheError {
             Self::MutexLockFailed(_) => None,
             Self::MemoryRecordError(e) => Some(e),
             Self::SSTableReaderError(e) => Some(e),
+            Self::IndexBlockNotFound(_, _) => None,
         }
     }
 }

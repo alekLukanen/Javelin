@@ -12,13 +12,13 @@ use crate::core::{
     db_context::DBContext,
     entry::{Entry, LogEntry},
     iterator::{IteratorError, SourceIterator},
-    sstable_builder::PrefixCompressedEntry,
 };
 
 #[derive(Debug)]
 pub enum FileBlockIteratorError {
     BlockCacheError(BlockCacheError),
     FileIndexNotFound(u64),
+    FileMetaDataNotFound(u64),
     DataBlockNotFound(u64, u32),
     InvalidCRC32,
     IOError(io::Error),
@@ -31,6 +31,7 @@ impl Display for FileBlockIteratorError {
         match self {
             Self::BlockCacheError(err) => write!(f, "BlockCacheError: {}", err),
             Self::FileIndexNotFound(file_id) => write!(f, "FileIndexNotFound: {}", file_id),
+            Self::FileMetaDataNotFound(file_id) => write!(f, "FileMetaDataNotFound: {}", file_id),
             Self::DataBlockNotFound(file_id, block_id) => {
                 write!(f, "DatablockNotFound: {}, {}", file_id, block_id)
             }
@@ -47,6 +48,7 @@ impl Error for FileBlockIteratorError {
         match self {
             Self::BlockCacheError(err) => Some(err),
             Self::FileIndexNotFound(_) => None,
+            Self::FileMetaDataNotFound(_) => None,
             Self::DataBlockNotFound(_, _) => None,
             Self::InvalidCRC32 => None,
             Self::IOError(err) => Some(err),
@@ -141,7 +143,16 @@ impl FileBlockIterator {
                 }
 
                 // find the next block if it exists
+                let Some(meta_block_data) = self.block_cache.get_meta_block(&self.file_id)? else {
+                    return Err(FileBlockIteratorError::FileMetaDataNotFound(self.file_id));
+                };
+                let meta_data = buf_utils::decode_meta_data(meta_block_data.as_ref())?;
+
                 let next_block_idx = current_block.idx + 1;
+                if next_block_idx >= meta_data.num_blocks {
+                    return Ok(false);
+                }
+
                 match self.set_block(next_block_idx) {
                     Ok(_) => {
                         self.db_context

@@ -3,7 +3,8 @@ use std::{error::Error, fmt::Display, fs::File, io, path::PathBuf, sync::Arc};
 
 use crc::{CRC_32_CKSUM, Crc};
 
-use super::sstable_builder::BlockHandle;
+use crate::core::sstable_builder::{FooterBlock, MetaDataBlock};
+
 use super::{
     db_context::DBContext,
     sstable_builder::{Block, Compression, PrefixCompressedEntry, SSTableBuilder},
@@ -14,8 +15,7 @@ const CRC32: Crc<u32> = Crc::<u32>::new(&CRC_32_CKSUM);
 #[derive(Debug)]
 pub enum SSTableWriterError {
     IOError(io::Error),
-    IndexBlockAlreadyWritten,
-    FooterBlockAlreadyWritten,
+    WriteStagePerformedOutOfOrder,
     IndexNotWrittenBeforeFooter,
 }
 
@@ -23,8 +23,7 @@ impl Display for SSTableWriterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::IOError(e) => write!(f, "IOError: {}", e),
-            Self::IndexBlockAlreadyWritten => write!(f, "IndexBlockAlreadyWritten"),
-            Self::FooterBlockAlreadyWritten => write!(f, "FooterBlockAlreadyWritten"),
+            Self::WriteStagePerformedOutOfOrder => write!(f, "WriteStagePerformedOutOfOrder"),
             Self::IndexNotWrittenBeforeFooter => write!(f, "IndexNotWrittenBeforeFooter"),
         }
     }
@@ -34,8 +33,7 @@ impl Error for SSTableWriterError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::IOError(e) => Some(e),
-            Self::IndexBlockAlreadyWritten => None,
-            Self::FooterBlockAlreadyWritten => None,
+            Self::WriteStagePerformedOutOfOrder => None,
             Self::IndexNotWrittenBeforeFooter => None,
         }
     }
@@ -55,6 +53,14 @@ pub enum BlockData {
     FooterBlock(Vec<u8>),
 }
 
+#[derive(PartialEq)]
+pub enum WriteStage {
+    DataBlock,
+    IndexBlock,
+    MetaDataBlock,
+    FooterBlock,
+}
+
 pub struct SSTableWriter {
     db_context: Arc<DBContext>,
 
@@ -63,9 +69,9 @@ pub struct SSTableWriter {
 
     data_size: usize,
     index_size: usize,
+    meta_size: usize,
     index_block_entries: Vec<(Vec<u8>, usize)>,
-    returned_index_block: bool,
-    returned_footer_block: bool,
+    write_stage: WriteStage,
 }
 
 impl SSTableWriter {
@@ -81,9 +87,9 @@ impl SSTableWriter {
             file,
             data_size: 0,
             index_size: 0,
+            meta_size: 0,
             index_block_entries: Vec::new(),
-            returned_index_block: false,
-            returned_footer_block: false,
+            write_stage: WriteStage::DataBlock,
         })
     }
 
@@ -99,29 +105,43 @@ impl SSTableWriter {
     }
 
     pub fn index_block(&mut self) -> Result<Vec<u8>, SSTableWriterError> {
-        if !self.returned_index_block {
+        if self.write_stage == WriteStage::DataBlock {
             let index_block = self.builder.index_block(&self.index_block_entries);
             let data = self.write_block(&index_block)?;
-            self.returned_index_block = true;
+            self.write_stage = WriteStage::IndexBlock;
             Ok(data)
         } else {
-            Err(SSTableWriterError::IndexBlockAlreadyWritten)
+            Err(SSTableWriterError::WriteStagePerformedOutOfOrder)
         }
     }
 
-    pub fn footer_block(&mut self) -> Result<Vec<u8>, SSTableWriterError> {
-        if !self.returned_footer_block && self.returned_index_block {
-            let footer_block = self.builder.footer(self.data_size, self.index_size);
-            let data = self.write_block(&footer_block)?;
-            self.returned_footer_block = true;
+    pub fn meta_data_block(&mut self) -> Result<Vec<u8>, SSTableWriterError> {
+        if self.write_stage == WriteStage::IndexBlock {
+            let meta_block = self.builder.meta();
+            let data = self.write_block(&meta_block)?;
+            self.write_stage = WriteStage::MetaDataBlock;
 
             self.file.sync_all()?;
 
             Ok(data)
-        } else if !self.returned_index_block {
-            Err(SSTableWriterError::IndexNotWrittenBeforeFooter)
         } else {
-            Err(SSTableWriterError::FooterBlockAlreadyWritten)
+            Err(SSTableWriterError::WriteStagePerformedOutOfOrder)
+        }
+    }
+
+    pub fn footer_block(&mut self) -> Result<Vec<u8>, SSTableWriterError> {
+        if self.write_stage == WriteStage::MetaDataBlock {
+            let footer_block = self
+                .builder
+                .footer(self.data_size, self.index_size, self.meta_size);
+            let data = self.write_block(&footer_block)?;
+            self.write_stage = WriteStage::FooterBlock;
+
+            self.file.sync_all()?;
+
+            Ok(data)
+        } else {
+            Err(SSTableWriterError::WriteStagePerformedOutOfOrder)
         }
     }
 
@@ -154,31 +174,31 @@ impl SSTableWriter {
                 self.index_size = data.len();
                 Ok(data)
             }
+            Block::MetaDataBlock(meta_data_block) => {
+                self.db_context
+                    .log_debug("[SSTableWriter] writing meta data block".to_string());
+                let data = self.write_meta_data_block(meta_data_block)?;
+                self.meta_size = data.len();
+                Ok(data)
+            }
             Block::FooterBlock(footer_block) => {
                 self.db_context
                     .log_debug("[SSTableWriter] writing footer block".to_string());
-                let data = self.write_footer_block(
-                    &footer_block.magic,
-                    &footer_block.data_block_handle,
-                    &footer_block.index_block_handle,
-                )?;
+                let data = self.write_footer_block(footer_block)?;
                 Ok(data)
             }
         }
     }
 
-    fn write_footer_block(
+    fn write_meta_data_block(
         &mut self,
-        magic: &u64,
-        data_block_handle: &BlockHandle,
-        index_block_handle: &BlockHandle,
+        meta_data_block: &MetaDataBlock,
     ) -> Result<Vec<u8>, SSTableWriterError> {
-        let size = 8 + data_block_handle.size() + index_block_handle.size() + 1 + 4;
+        let size = meta_data_block.size() + 1 + 4;
         let mut data: Vec<u8> = Vec::with_capacity(size);
 
-        data.extend_from_slice(&magic.to_le_bytes());
-        data.extend_from_slice(&data_block_handle.value());
-        data.extend_from_slice(&index_block_handle.value());
+        // write the meta data block's data
+        data.extend_from_slice(&meta_data_block.num_blocks.to_le_bytes());
 
         let compression = Compression::None.value();
         data.push(compression);
@@ -189,10 +209,38 @@ impl SSTableWriter {
         self.file.write_all(&data)?;
 
         self.db_context.log_debug(format!(
-            "[SSTableWriter] footer: data.len()={}, data_block_handle={:?}, index_block_handle={:?}",
+            "[SSTableWriter] meta data: data.len()={}",
             data.len(),
-            data_block_handle,
-            index_block_handle
+        ));
+
+        assert_eq!(size, data.len());
+
+        Ok(data)
+    }
+
+    fn write_footer_block(&mut self, footer: &FooterBlock) -> Result<Vec<u8>, SSTableWriterError> {
+        let size = footer.size() + 1 + 4;
+        let mut data: Vec<u8> = Vec::with_capacity(size);
+
+        data.extend_from_slice(&footer.magic.to_le_bytes());
+        data.extend_from_slice(&footer.data_block_handle.value());
+        data.extend_from_slice(&footer.index_block_handle.value());
+        data.extend_from_slice(&footer.meta_block_handle.value());
+
+        let compression = Compression::None.value();
+        data.push(compression);
+
+        let crc32 = CRC32.checksum(&data);
+        data.extend_from_slice(&crc32.to_le_bytes());
+
+        self.file.write_all(&data)?;
+
+        self.db_context.log_debug(format!(
+            "[SSTableWriter] footer: data.len()={}, data_block_handle={:?}, index_block_handle={:?}, meta_block_handle={:?}",
+            data.len(),
+            footer.data_block_handle,
+            footer.index_block_handle,
+            footer.meta_block_handle,
         ));
 
         assert_eq!(size, data.len());

@@ -48,16 +48,37 @@ impl DataBlock {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct MetaDataBlock {
+    pub(crate) num_blocks: u32,
+}
+
+impl MetaDataBlock {
+    pub fn size(&self) -> usize {
+        4
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct FooterBlock {
     pub(crate) magic: u64,
     pub(crate) data_block_handle: BlockHandle,
     pub(crate) index_block_handle: BlockHandle,
+    pub(crate) meta_block_handle: BlockHandle,
+}
+
+impl FooterBlock {
+    pub fn size(&self) -> usize {
+        8 + self.data_block_handle.size()
+            + self.index_block_handle.size()
+            + self.meta_block_handle.size()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Block {
     DataBlock(DataBlock),
     IndexBlock(DataBlock),
+    MetaDataBlock(MetaDataBlock),
     FooterBlock(FooterBlock),
 }
 
@@ -66,9 +87,8 @@ impl Block {
         match self {
             Self::DataBlock(data_block) => data_block.size(),
             Self::IndexBlock(index_block) => index_block.size(),
-            Self::FooterBlock(footer_block) => {
-                8 + footer_block.data_block_handle.size() + footer_block.index_block_handle.size()
-            }
+            Self::MetaDataBlock(meta_block) => meta_block.size(),
+            Self::FooterBlock(footer_block) => footer_block.size(),
         }
     }
 }
@@ -104,6 +124,7 @@ pub struct SSTableBuilder {
     db_context: Arc<DBContext>,
 
     returned_index_block: bool,
+    meta_data: MetaDataBlock,
 
     immutable_memtable: Option<SkipListIter>,
     restart_segment_size: usize,
@@ -118,6 +139,7 @@ impl SSTableBuilder {
         SSTableBuilder {
             db_context: db_context.clone(),
             returned_index_block: false,
+            meta_data: MetaDataBlock { num_blocks: 0 },
             immutable_memtable: Some(memtable.skip_list_iter()),
             restart_segment_size: db_context.config().sstable_restart_interval(),
             max_block_size: db_context.config().sstable_max_block_size(),
@@ -180,6 +202,10 @@ impl SSTableBuilder {
                 keys: compressed_entries,
                 restarts: restart_offsets,
             });
+
+            // update meta data
+            self.meta_data.num_blocks += 1;
+
             Some(data_block)
         } else {
             None
@@ -242,7 +268,7 @@ impl SSTableBuilder {
         })
     }
 
-    pub fn footer(&self, data_size: usize, index_size: usize) -> Block {
+    pub fn footer(&self, data_size: usize, index_size: usize, meta_size: usize) -> Block {
         Block::FooterBlock(FooterBlock {
             magic: 69,
             data_block_handle: BlockHandle {
@@ -253,7 +279,15 @@ impl SSTableBuilder {
                 offset: data_size as u64,
                 size: index_size as u64,
             },
+            meta_block_handle: BlockHandle {
+                offset: (data_size + index_size) as u64,
+                size: meta_size as u64,
+            },
         })
+    }
+
+    pub fn meta(&self) -> Block {
+        Block::MetaDataBlock(self.meta_data.clone())
     }
 
     #[inline]

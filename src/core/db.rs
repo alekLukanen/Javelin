@@ -296,14 +296,16 @@ impl DBBackend {
 
         // write the index and footer
         let index_block = sstable_writer.index_block()?;
+        let meta_block = sstable_writer.meta_data_block()?;
         let footer_block = sstable_writer.footer_block()?;
 
         // write the file to the block cache
-        db_backend
-            .db_inner
-            .lock()?
-            .block_cache
-            .add_sstable(file_num, footer_block, index_block)?;
+        db_backend.db_inner.lock()?.block_cache.add_sstable(
+            file_num,
+            footer_block,
+            index_block,
+            meta_block,
+        )?;
 
         // write the file to the manifest and remove the flushing memtable reference
         let mut guard = db_backend.db_inner.lock()?;

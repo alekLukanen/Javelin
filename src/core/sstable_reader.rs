@@ -6,7 +6,9 @@ use crc::{CRC_32_CKSUM, Crc};
 
 use crate::core::buf_utils::{self, BufUtilsError};
 use crate::core::db_context::DBContext;
-use crate::core::sstable_builder::{BlockHandle, DataBlock, FooterBlock, PrefixCompressedEntry};
+use crate::core::sstable_builder::{
+    BlockHandle, DataBlock, FooterBlock, MetaDataBlock, PrefixCompressedEntry,
+};
 
 const CRC32: Crc<u32> = Crc::<u32>::new(&CRC_32_CKSUM);
 
@@ -20,6 +22,7 @@ pub enum SSTableReaderError {
     EntryMalformed(String),
     BufUtilsError(BufUtilsError),
     BlockNotFoundById(u32),
+    BlockIdOutOfBounds(u32, u32),
 }
 
 impl Display for SSTableReaderError {
@@ -47,6 +50,13 @@ impl Display for SSTableReaderError {
             Self::BlockNotFoundById(block_id) => {
                 write!(f, "BlockNotFoundById: block_id={}", block_id)
             }
+            Self::BlockIdOutOfBounds(block_id, num_blocks) => {
+                write!(
+                    f,
+                    "BlockIdOutOfBounds: block_id={}, num_blocks: {}",
+                    block_id, num_blocks
+                )
+            }
         }
     }
 }
@@ -62,6 +72,7 @@ impl Error for SSTableReaderError {
             Self::EntryMalformed(_) => None,
             Self::BufUtilsError(err) => Some(err),
             Self::BlockNotFoundById(_) => None,
+            Self::BlockIdOutOfBounds(_, _) => None,
         }
     }
 }
@@ -85,6 +96,7 @@ pub struct SSTableReader {
 
     file: File,
     footer: Option<FooterBlock>,
+    meta: Option<MetaDataBlock>,
 }
 
 impl SSTableReader {
@@ -97,6 +109,7 @@ impl SSTableReader {
             db_context,
             file,
             footer: None,
+            meta: None,
         })
     }
 
@@ -113,6 +126,14 @@ impl SSTableReader {
     ) -> Result<Vec<u8>, SSTableReaderError> {
         self.db_context
             .log_debug(format!("[SSTableReader] get block {}", block_id));
+
+        let meta_block = self.decoded_meta_block()?;
+        if *block_id > meta_block.num_blocks - 1 {
+            return Err(SSTableReaderError::BlockIdOutOfBounds(
+                *block_id,
+                meta_block.num_blocks,
+            ));
+        }
 
         let (mut entry_cursor, mut restart_cursor) =
             buf_utils::entry_and_restart_cursors(&index_block)?;
@@ -135,15 +156,27 @@ impl SSTableReader {
 
         // skip these entries
         for idx in restart_entry_idx..(*block_id as u64) {
-            self.db_context
-                .log_debug(format!("[SSTableReader] skipping entry {}", idx));
+            self.db_context.log_debug(format!(
+                "[SSTableReader] skipping entry {} | position={}, len={}",
+                idx,
+                entry_cursor.position(),
+                entry_cursor.get_ref().len()
+            ));
 
-            let _ = buf_utils::read_entry(&mut entry_cursor)?;
+            let entry = buf_utils::read_entry(&mut entry_cursor)?;
+            self.db_context
+                .log_debug(format!("[SSTableReader] entry={:?}", entry));
 
             if entry_cursor.position() == entry_cursor.get_ref().len() as u64 {
                 return Err(SSTableReaderError::BlockNotFoundById(*block_id));
             }
         }
+
+        self.db_context.log_debug(format!(
+            "outside of loop | position={}, len={}",
+            entry_cursor.position(),
+            entry_cursor.get_ref().len()
+        ));
 
         let entry = buf_utils::read_entry(&mut entry_cursor)?;
         let block_handle = buf_utils::read_handle(&mut Cursor::new(&entry.value))?;
@@ -181,8 +214,35 @@ impl SSTableReader {
         Ok(buf)
     }
 
+    pub fn decoded_meta_block(&mut self) -> Result<MetaDataBlock, SSTableReaderError> {
+        if let Some(meta_block) = &self.meta {
+            return Ok(meta_block.clone());
+        }
+
+        let meta_block_data = self.meta_block()?;
+        let meta = buf_utils::decode_meta_data(&meta_block_data)?;
+        self.meta = Some(meta.clone());
+
+        Ok(meta)
+    }
+
+    pub fn meta_block(&mut self) -> Result<Vec<u8>, SSTableReaderError> {
+        let footer = self.decoded_footer_block()?;
+
+        let meta_size: u64 = 4 + 1 + 4;
+
+        self.file
+            .seek(SeekFrom::Start(footer.meta_block_handle.offset))?;
+
+        let buf = buf_utils::file_read_n(&mut self.file, footer.meta_block_handle.size as usize)?;
+
+        assert_eq!(meta_size, buf.len() as u64);
+
+        Ok(buf)
+    }
+
     pub fn footer_block(&mut self) -> Result<Vec<u8>, SSTableReaderError> {
-        let header_size: u64 = 8 + 16 + 16 + 1 + 4;
+        let header_size: u64 = 8 + 16 + 16 + 16 + 1 + 4;
 
         let file_len = self.file.metadata()?.len();
         let start_pos = file_len.saturating_sub(header_size);
@@ -209,6 +269,7 @@ impl SSTableReader {
         let magic: u64 = buf_utils::read_u64(&mut cursor)?;
         let data_block_handle = buf_utils::read_handle(&mut cursor)?;
         let index_block_handle = buf_utils::read_handle(&mut cursor)?;
+        let meta_block_handle = buf_utils::read_handle(&mut cursor)?;
 
         if !buf_utils::valid_block_crc32(&buf)? {
             return Err(SSTableReaderError::InvalidCRC32);
@@ -222,6 +283,7 @@ impl SSTableReader {
             magic,
             data_block_handle,
             index_block_handle,
+            meta_block_handle,
         };
         self.footer = Some(footer_block.clone());
         Ok(footer_block.clone())

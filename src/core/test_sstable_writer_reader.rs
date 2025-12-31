@@ -67,6 +67,7 @@ fn test_simple_case_sstable_writer_and_reader() -> Result<(), Box<dyn Error>> {
     assert_eq!(1, data_blocks.len());
 
     let expected_index_block_data = sstable_writer.index_block()?;
+    let expected_meta_block_data = sstable_writer.meta_data_block()?;
     let expected_footer_block_data = sstable_writer.footer_block()?;
     let expected_data_block_data = data_blocks.get(0).expect("expected data block 0");
 
@@ -83,6 +84,10 @@ fn test_simple_case_sstable_writer_and_reader() -> Result<(), Box<dyn Error>> {
     // read the index block
     let index = sstable_reader.index_block()?;
     assert_eq!(expected_index_block_data, index);
+
+    // read the meta data block
+    let meta = sstable_reader.meta_block()?;
+    assert_eq!(expected_meta_block_data, meta);
 
     // read the data block
     let mut sstable_reader = SSTableReader::new(tc.db_context.clone(), sstable_path.clone())?;
@@ -143,13 +148,10 @@ fn test_large_case_sstable_reader_get_block() -> Result<(), Box<dyn Error>> {
         data_blocks.push(data_block);
     }
 
-    // blocks
-    // - data
-    // - index
-    // - footer
     assert_eq!(157, data_blocks.len());
 
     let expected_index_block_data = sstable_writer.index_block()?;
+    let expected_meta_block_data = sstable_writer.meta_data_block()?;
     let expected_footer_block_data = sstable_writer.footer_block()?;
 
     // drop the writer to close the file
