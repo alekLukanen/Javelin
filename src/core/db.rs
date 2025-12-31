@@ -278,7 +278,7 @@ impl DBBackend {
         // write the data to the sstable and the block cache
         let mut block_id: u32 = 0;
         loop {
-            let Some(data_block) = sstable_writer.next_data_block()? else {
+            let Some(_) = sstable_writer.next_data_block()? else {
                 break;
             };
             /*

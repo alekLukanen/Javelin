@@ -231,11 +231,14 @@ impl SSTableBuilder {
             }
 
             // break when the block size is large enough
-            if block_size as usize > self.max_block_size {
-                break;
-            }
+            //if block_size as usize > self.max_block_size {
+            //    break;
+            //}
             restart_idx += 1;
         }
+
+        self.db_context
+            .log_debug(format!("[SSTableBuilder] index block size={}", block_size));
 
         Block::IndexBlock(DataBlock {
             keys: compressed_entries,

@@ -2,11 +2,14 @@ use std::{
     collections::{BTreeMap, HashMap, LinkedList},
     error::Error,
     fmt::Display,
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
+
+use crate::core::sstable_reader::{SSTableReader, SSTableReaderError};
 
 use super::{
     db_context::DBContext,
@@ -127,6 +130,8 @@ impl BlockCacheShard {
 }
 
 pub struct BlockCache {
+    db_context: Arc<DBContext>,
+
     inner: Arc<BlockCacheInner>,
     handle: std::thread::JoinHandle<()>,
 }
@@ -148,13 +153,18 @@ impl BlockCache {
             maintain_idx: AtomicUsize::new(0),
         });
         let inner_clone = inner.clone();
+        let db_context_clone = db_context.clone();
         let handle = std::thread::spawn(move || {
             let res = inner_clone.maintain();
             if let Err(err) = res {
-                db_context.log_error(format!("[BlockCache] {:?}", err));
+                db_context_clone.log_error(format!("[BlockCache] {:?}", err));
             }
         });
-        BlockCache { inner, handle }
+        BlockCache {
+            db_context,
+            inner,
+            handle,
+        }
     }
 
     pub fn close(&self) {
@@ -228,12 +238,39 @@ impl BlockCache {
     }
 
     pub fn get_index_block(&self, file_id: &u64) -> Result<Option<Arc<Vec<u8>>>, BlockCacheError> {
-        let sstables_guard = self.inner.sstables.lock()?;
-        let sstable = sstables_guard.get(&file_id);
-        match sstable {
+        self.load_sstable_if_not_found(file_id)?;
+
+        self.db_context.log_debug("getting index block".to_string());
+        match self.inner.sstables.lock()?.get(file_id) {
             Some(sstable) => Ok(Some(sstable.index.clone())),
             None => Ok(None),
         }
+    }
+
+    fn load_sstable_if_not_found(&self, file_id: &u64) -> Result<(), BlockCacheError> {
+        // TODO: improve this so that the guard isn't held while
+        // the sstable is being read
+        let has_sstable = self.inner.sstables.lock()?.get(file_id).is_some();
+
+        if has_sstable {
+            return Ok(());
+        }
+
+        let mut file_path = PathBuf::new();
+        file_path.push(self.db_context.config().data_dir());
+        file_path.push(format!("{}.dat", file_id));
+
+        let mut sstable_reader = SSTableReader::new(self.db_context.clone(), file_path)?;
+        let footer = sstable_reader.footer_block()?;
+        let index = sstable_reader.index_block()?;
+        let sstable = SSTable {
+            id: file_id.clone(),
+            footer: Arc::new(footer),
+            index: Arc::new(index),
+        };
+
+        self.inner.sstables.lock()?.insert(*file_id, sstable);
+        Ok(())
     }
 
     fn new_pre_allocated_record(&self, size: usize) -> Result<MemoryRecord, BlockCacheError> {
@@ -304,14 +341,16 @@ pub enum BlockCacheError {
     UnableToAllocateMemory,
     MutexLockFailed(String),
     MemoryRecordError(MemoryRecordError),
+    SSTableReaderError(SSTableReaderError),
 }
 
 impl Display for BlockCacheError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BlockCacheError::UnableToAllocateMemory => write!(f, "UnableToAllocateMemory"),
-            BlockCacheError::MutexLockFailed(e) => write!(f, "MutexLockFailed: {}", e),
-            BlockCacheError::MemoryRecordError(e) => write!(f, "MemoryRecordError: {}", e),
+            Self::UnableToAllocateMemory => write!(f, "UnableToAllocateMemory"),
+            Self::MutexLockFailed(e) => write!(f, "MutexLockFailed: {}", e),
+            Self::MemoryRecordError(e) => write!(f, "MemoryRecordError: {}", e),
+            Self::SSTableReaderError(e) => write!(f, "SSTableReaderError: {}", e),
         }
     }
 }
@@ -319,21 +358,28 @@ impl Display for BlockCacheError {
 impl Error for BlockCacheError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            BlockCacheError::UnableToAllocateMemory => None,
-            BlockCacheError::MutexLockFailed(_) => None,
-            BlockCacheError::MemoryRecordError(e) => Some(e),
+            Self::UnableToAllocateMemory => None,
+            Self::MutexLockFailed(_) => None,
+            Self::MemoryRecordError(e) => Some(e),
+            Self::SSTableReaderError(e) => Some(e),
         }
     }
 }
 
 impl<T> From<std::sync::PoisonError<std::sync::MutexGuard<'_, T>>> for BlockCacheError {
     fn from(value: std::sync::PoisonError<std::sync::MutexGuard<'_, T>>) -> Self {
-        BlockCacheError::MutexLockFailed(value.to_string())
+        Self::MutexLockFailed(value.to_string())
     }
 }
 
 impl From<MemoryRecordError> for BlockCacheError {
     fn from(value: MemoryRecordError) -> Self {
-        BlockCacheError::MemoryRecordError(value)
+        Self::MemoryRecordError(value)
+    }
+}
+
+impl From<SSTableReaderError> for BlockCacheError {
+    fn from(value: SSTableReaderError) -> Self {
+        Self::SSTableReaderError(value)
     }
 }

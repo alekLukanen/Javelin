@@ -376,11 +376,7 @@ impl FileBlockIterator {
             return Ok(None);
         };
 
-        if current_block.key_offset >= current_block.keys_len {
-            return Ok(None);
-        }
-
-        loop {
+        while current_block.key_offset < current_block.keys_len {
             let lower_bound = &self.lower_bound;
             let upper_bound = &self.upper_bound;
 
@@ -407,8 +403,11 @@ impl FileBlockIterator {
                     current_block.current_user_key = Some(temp_user_key.clone());
                     current_block.key_offset = new_key_offset;
 
-                    if !Self::within_bounds(lower_bound, upper_bound, &temp_user_key) {
+                    if !Self::within_lower_bound(lower_bound, &temp_user_key) {
                         continue;
+                    }
+                    if !Self::within_upper_bound(upper_bound, &temp_user_key) {
+                        break;
                     }
 
                     return Ok(Some(Self::rebuild_entry(
@@ -432,8 +431,11 @@ impl FileBlockIterator {
                     current_block.current_user_key = Some(user_key.clone());
                     current_block.key_offset = new_key_offset;
 
-                    if !Self::within_bounds(lower_bound, upper_bound, &user_key) {
+                    if !Self::within_lower_bound(lower_bound, &user_key) {
                         continue;
+                    }
+                    if !Self::within_upper_bound(upper_bound, &user_key) {
+                        break;
                     }
 
                     return Ok(Some(Self::rebuild_entry(
@@ -445,29 +447,30 @@ impl FileBlockIterator {
                 }
             }
         }
+
+        Ok(None)
     }
 
     #[inline]
-    fn within_bounds(
-        lower_bound: &Option<Vec<u8>>,
-        upper_bound: &Option<Vec<u8>>,
-        key: &Vec<u8>,
-    ) -> bool {
+    fn within_lower_bound(lower_bound: &Option<Vec<u8>>, key: &Vec<u8>) -> bool {
         match lower_bound {
             Some(lower_bound) => match &lower_bound[..].cmp(key) {
                 Ordering::Greater => return false,
-                _ => {}
+                _ => true,
             },
-            None => {}
+            None => true,
         }
+    }
+
+    #[inline]
+    fn within_upper_bound(upper_bound: &Option<Vec<u8>>, key: &Vec<u8>) -> bool {
         match upper_bound {
             Some(upper_bound) => match &upper_bound[..].cmp(key) {
-                Ordering::Less => return false,
-                _ => {}
+                Ordering::Less => false,
+                _ => true,
             },
-            None => {}
+            None => true,
         }
-        true
     }
 
     #[inline]

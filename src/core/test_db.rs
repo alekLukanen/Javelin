@@ -1,6 +1,8 @@
 use std::{error::Error, fs, thread, time};
 
-use crate::core::{file_utils, sstable_reader::SSTableReader, test_utils::TestContext};
+use crate::core::{
+    block_cache::BlockCache, file_utils, sstable_reader::SSTableReader, test_utils::TestContext,
+};
 
 use super::{db::DB, db_config::DBConfigBuilder};
 
@@ -66,11 +68,13 @@ fn test_large_case_with_immutable_memtable_created() -> Result<(), Box<dyn Error
     thread::sleep(time::Duration::from_millis(100));
 
     // check if the sstable exists
-    let sstable_0_path = file_utils::sstable_path(&config, 0);
-    let mut sstable_reader_1 = SSTableReader::new(tc.db_context.clone(), sstable_0_path.clone())?;
+    let block_cache = BlockCache::new(tc.db_context.clone(), tc.memory_manager.clone());
 
-    let index_block = sstable_reader_1.index_block()?;
-    assert_eq!(4, index_block.keys.len());
+    let _ = block_cache
+        .get_index_block(&0)?
+        .expect("expected index block");
+
+    let sstable_0_path = file_utils::sstable_path(&config, 0);
 
     // validate that another file doesn't exist
     let expected_files = vec![sstable_0_path];

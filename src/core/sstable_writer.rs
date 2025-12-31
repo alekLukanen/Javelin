@@ -16,14 +16,16 @@ pub enum SSTableWriterError {
     IOError(io::Error),
     IndexBlockAlreadyWritten,
     FooterBlockAlreadyWritten,
+    IndexNotWrittenBeforeFooter,
 }
 
 impl Display for SSTableWriterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SSTableWriterError::IOError(e) => write!(f, "IOError: {}", e),
-            SSTableWriterError::IndexBlockAlreadyWritten => write!(f, "IndexBlockAlreadyWritten"),
-            SSTableWriterError::FooterBlockAlreadyWritten => write!(f, "FooterBlockAlreadyWritten"),
+            Self::IOError(e) => write!(f, "IOError: {}", e),
+            Self::IndexBlockAlreadyWritten => write!(f, "IndexBlockAlreadyWritten"),
+            Self::FooterBlockAlreadyWritten => write!(f, "FooterBlockAlreadyWritten"),
+            Self::IndexNotWrittenBeforeFooter => write!(f, "IndexNotWrittenBeforeFooter"),
         }
     }
 }
@@ -31,16 +33,17 @@ impl Display for SSTableWriterError {
 impl Error for SSTableWriterError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            SSTableWriterError::IOError(e) => Some(e),
-            SSTableWriterError::IndexBlockAlreadyWritten => None,
-            SSTableWriterError::FooterBlockAlreadyWritten => None,
+            Self::IOError(e) => Some(e),
+            Self::IndexBlockAlreadyWritten => None,
+            Self::FooterBlockAlreadyWritten => None,
+            Self::IndexNotWrittenBeforeFooter => None,
         }
     }
 }
 
 impl From<io::Error> for SSTableWriterError {
     fn from(value: io::Error) -> Self {
-        SSTableWriterError::IOError(value)
+        Self::IOError(value)
     }
 }
 
@@ -107,7 +110,7 @@ impl SSTableWriter {
     }
 
     pub fn footer_block(&mut self) -> Result<Vec<u8>, SSTableWriterError> {
-        if !self.returned_footer_block {
+        if !self.returned_footer_block && self.returned_index_block {
             let footer_block = self.builder.footer(self.data_size, self.index_size);
             let data = self.write_block(&footer_block)?;
             self.returned_footer_block = true;
@@ -115,6 +118,8 @@ impl SSTableWriter {
             self.file.sync_all()?;
 
             Ok(data)
+        } else if !self.returned_index_block {
+            Err(SSTableWriterError::IndexNotWrittenBeforeFooter)
         } else {
             Err(SSTableWriterError::FooterBlockAlreadyWritten)
         }
@@ -123,7 +128,10 @@ impl SSTableWriter {
     fn write_block(&mut self, block: &Block) -> Result<Vec<u8>, SSTableWriterError> {
         match block {
             Block::DataBlock(data_block) => {
-                self.db_context.log_debug("writing data block".to_string());
+                self.db_context.log_debug(format!(
+                    "writing data block id={}",
+                    self.index_block_entries.len()
+                ));
                 let data =
                     self.write_data_or_index_block(&data_block.keys, &data_block.restarts)?;
                 self.data_size += data.len();
@@ -179,6 +187,13 @@ impl SSTableWriter {
 
         self.file.write_all(&data)?;
 
+        self.db_context.log_debug(format!(
+            "footer: data.len()={}, data_block_handle={:?}, index_block_handle={:?}",
+            data.len(),
+            data_block_handle,
+            index_block_handle
+        ));
+
         assert_eq!(size, data.len());
 
         Ok(data)
@@ -197,17 +212,12 @@ impl SSTableWriter {
         // write the data section
         data.extend_from_slice(&keys_len.to_le_bytes());
         for entry in keys {
-            self.db_context.log_debug(format!("entry: {:?}", entry));
+            //self.db_context.log_debug(format!("entry: {:?}", entry));
             data.extend_from_slice(&entry.shared_len.to_le_bytes());
             data.extend_from_slice(&entry.unshared_len.to_le_bytes());
             data.extend_from_slice(&entry.value_len.to_le_bytes());
             data.extend_from_slice(&entry.key_suffix);
             data.extend_from_slice(&entry.value);
-            self.db_context.log_debug(format!(
-                "data.len() = {}, keys_len = {}",
-                data.len(),
-                keys_len
-            ));
         }
 
         // write the restarts section

@@ -4,7 +4,7 @@ use std::{error::Error, fmt::Display, fs::File, path::PathBuf, sync::Arc};
 
 use crc::{CRC_32_CKSUM, Crc};
 
-use crate::core::buf_utils;
+use crate::core::buf_utils::{self, BufUtilsError};
 use crate::core::db_context::DBContext;
 use crate::core::sstable_builder::{BlockHandle, DataBlock, FooterBlock, PrefixCompressedEntry};
 
@@ -18,6 +18,8 @@ pub enum SSTableReaderError {
     InvalidMagic(u64, u64),
     InvalidCRC32,
     EntryMalformed(String),
+    BufUtilsError(BufUtilsError),
+    BlockNotFoundById(u32),
 }
 
 impl Display for SSTableReaderError {
@@ -39,6 +41,12 @@ impl Display for SSTableReaderError {
             Self::EntryMalformed(reason) => {
                 write!(f, "EntryMalformed: reason={}", reason)
             }
+            Self::BufUtilsError(err) => {
+                write!(f, "BufUtilsError: {}", err)
+            }
+            Self::BlockNotFoundById(block_id) => {
+                write!(f, "BlockNotFoundById: block_id={}", block_id)
+            }
         }
     }
 }
@@ -52,6 +60,8 @@ impl Error for SSTableReaderError {
             Self::InvalidMagic(_, _) => None,
             Self::InvalidCRC32 => None,
             Self::EntryMalformed(_) => None,
+            Self::BufUtilsError(err) => Some(err),
+            Self::BlockNotFoundById(_) => None,
         }
     }
 }
@@ -59,6 +69,12 @@ impl Error for SSTableReaderError {
 impl From<io::Error> for SSTableReaderError {
     fn from(value: io::Error) -> Self {
         Self::IOError(value)
+    }
+}
+
+impl From<BufUtilsError> for SSTableReaderError {
+    fn from(value: BufUtilsError) -> Self {
+        Self::BufUtilsError(value)
     }
 }
 
@@ -90,16 +106,64 @@ impl SSTableReader {
         })
     }
 
-    pub fn index_block(&mut self) -> Result<DataBlock, SSTableReaderError> {
-        let footer = self.footer_block()?;
+    pub fn index_block(&mut self) -> Result<Vec<u8>, SSTableReaderError> {
+        let footer = self.decoded_footer_block()?;
 
         self.data_block(&footer.index_block_handle)
+    }
+
+    pub fn get_block(
+        &mut self,
+        block_id: &u32,
+        index_block: &Vec<u8>,
+    ) -> Result<Vec<u8>, SSTableReaderError> {
+        self.db_context
+            .log_debug(format!("[SSTableReader] get block {}", block_id));
+
+        let (mut entry_cursor, mut restart_cursor) =
+            buf_utils::entry_and_restart_cursors(&index_block)?;
+
+        let restart_interval = self.db_context.config().sstable_restart_interval() as u64;
+
+        // get the restart interval closet to the block handle
+        let restart_idx = *block_id as u64 / restart_interval;
+        let restart_entry_idx = restart_idx * restart_interval;
+        let restart_pos = restart_idx * 4;
+
+        restart_cursor.set_position(restart_pos);
+        let index_entry_offset = buf_utils::read_u32(&mut restart_cursor)?;
+
+        // set the entry cursor to the restart offset
+        entry_cursor.set_position(index_entry_offset as u64);
+
+        // with the restart position get the index entry by cycling forward
+        // until the block entry of interest is found
+
+        // skip these entries
+        for idx in restart_entry_idx..(*block_id as u64) {
+            self.db_context
+                .log_debug(format!("[SSTableReader] skipping entry {}", idx));
+
+            let _ = buf_utils::read_entry(&mut entry_cursor)?;
+
+            if entry_cursor.position() == entry_cursor.get_ref().len() as u64 {
+                return Err(SSTableReaderError::BlockNotFoundById(*block_id));
+            }
+        }
+
+        let entry = buf_utils::read_entry(&mut entry_cursor)?;
+        let block_handle = buf_utils::read_handle(&mut Cursor::new(&entry.value))?;
+
+        // read the data block
+        let data_block = self.data_block(&block_handle)?;
+
+        Ok(data_block)
     }
 
     pub fn data_block(
         &mut self,
         block_handle: &BlockHandle,
-    ) -> Result<DataBlock, SSTableReaderError> {
+    ) -> Result<Vec<u8>, SSTableReaderError> {
         let file_len = self.file.metadata()?.len();
         let start_pos = block_handle.offset;
         if start_pos + block_handle.size > file_len {
@@ -107,97 +171,25 @@ impl SSTableReader {
         }
         self.file.seek(SeekFrom::Start(start_pos))?;
 
-        self.db_context
-            .log_debug(format!("file_len={}, start_pos={}", file_len, start_pos));
-
         self.db_context.log_debug(format!(
-            "block_handle.offset={}, block_handle.size={}",
+            "[SSTableReader] block_handle.offset={}, block_handle.size={}",
             block_handle.offset, block_handle.size
         ));
 
         // load the entire block into the buffer
         let buf = buf_utils::file_read_n(&mut self.file, block_handle.size as usize)?;
-        let mut cursor = Cursor::new(&buf[..]);
-
-        let keys_len = buf_utils::read_u64(&mut cursor)?;
-        let block_size = block_handle.size;
-
-        // keys + keys len size
-        let max_keys_pos = keys_len + 8;
-
-        // block size - crc32 and compression size
-        let max_restarts_pos = block_size - 5;
 
         // parse the crc32 and compression
         if !buf_utils::valid_block_crc32(&buf)? {
             return Err(SSTableReaderError::InvalidCRC32);
         }
 
-        // parse the entries
-        let mut entries: Vec<PrefixCompressedEntry> = Vec::new();
-        while cursor.position() < max_keys_pos {
-            let shared_len = buf_utils::read_u32(&mut cursor)?;
-            let unshared_len = buf_utils::read_u32(&mut cursor)?;
-            let value_len = buf_utils::read_u32(&mut cursor)?;
+        self.db_context.log_debug("read data block".to_string());
 
-            self.db_context.log_debug(format!(
-                "shared_len={}, unshared_len={}, value_len={}, cursor.position()={}, keys_len={}, max_keys_pos={}",
-                shared_len,
-                unshared_len,
-                value_len,
-                cursor.position(),
-                keys_len,
-                max_keys_pos,
-            ));
-
-            // validate the lengths
-            if (unshared_len + 9 + value_len) as u64 + cursor.position() > max_keys_pos as u64 {
-                return Err(SSTableReaderError::EntryMalformed(
-                    "prefix compressed entry length longer than cursor".to_string(),
-                ));
-            }
-
-            let key_suffix = buf_utils::read_n(&mut cursor, unshared_len as usize + 9)?;
-            let value = buf_utils::read_n(&mut cursor, value_len as usize)?;
-            let entry = PrefixCompressedEntry {
-                shared_len,
-                unshared_len,
-                value_len,
-                key_suffix,
-                value,
-            };
-
-            self.db_context.log_debug(format!("entry: {:?}", entry));
-            entries.push(entry)
-        }
-
-        self.db_context.log_debug("read all entries".to_string());
-        self.db_context.log_debug(format!(
-            "cursor.position()={}, max_restarts_pos={}",
-            cursor.position(),
-            max_restarts_pos,
-        ));
-
-        // parse the restarts
-        let mut restarts: Vec<u32> = Vec::new();
-        while cursor.position() < max_restarts_pos {
-            let restart = buf_utils::read_u32(&mut cursor)?;
-            restarts.push(restart);
-        }
-
-        assert_eq!(max_restarts_pos as u64, cursor.position());
-
-        Ok(DataBlock {
-            keys: entries,
-            restarts: restarts,
-        })
+        Ok(buf)
     }
 
-    pub fn footer_block(&mut self) -> Result<FooterBlock, SSTableReaderError> {
-        if let Some(footer_block) = &self.footer {
-            return Ok(footer_block.clone());
-        }
-
+    pub fn footer_block(&mut self) -> Result<Vec<u8>, SSTableReaderError> {
         let header_size: u64 = 8 + 16 + 16 + 1 + 4;
 
         let file_len = self.file.metadata()?.len();
@@ -210,6 +202,15 @@ impl SSTableReader {
         let mut buf: Vec<u8> = Vec::with_capacity(header_size as usize);
         self.file.read_to_end(&mut buf)?;
 
+        Ok(buf)
+    }
+
+    pub fn decoded_footer_block(&mut self) -> Result<FooterBlock, SSTableReaderError> {
+        if let Some(footer_block) = &self.footer {
+            return Ok(footer_block.clone());
+        }
+
+        let buf = self.footer_block()?;
         let mut cursor = Cursor::new(&buf[..]);
 
         // decode the header data into the header block
