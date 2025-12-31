@@ -49,12 +49,14 @@ pub(crate) fn read_handle(cursor: &mut Cursor<&[u8]>) -> Result<BlockHandle, io:
     Ok(BlockHandle { offset, size })
 }
 
+/*
 #[inline]
 pub(crate) fn read_u8(cursor: &mut Cursor<&[u8]>) -> Result<u8, io::Error> {
     let mut buf = [0u8; 1];
     cursor.read_exact(&mut buf)?;
     Ok(u8::from_le_bytes(buf))
 }
+*/
 
 #[inline]
 pub(crate) fn read_u32(cursor: &mut Cursor<&[u8]>) -> Result<u32, io::Error> {
@@ -110,16 +112,7 @@ pub(crate) fn restart_start_and_end_offsets(buf: &Vec<u8>) -> Result<(u64, u64),
 pub(crate) fn entry_and_restart_cursors(
     buf: &Vec<u8>,
 ) -> Result<(Cursor<&[u8]>, Cursor<&[u8]>), BufUtilsError> {
-    let mut cursor = Cursor::new(&buf[..]);
-
-    let keys_len = read_u64(&mut cursor)?;
-    let block_size = buf.len() as u64;
-
-    // keys + keys len size
-    let max_keys_pos: u64 = keys_len + 8;
-
-    // block size - crc32 and compression size
-    let max_restarts_pos: u64 = block_size - 5;
+    let (max_keys_pos, max_restarts_pos) = restart_start_and_end_offsets(buf)?;
 
     let entry_cursor = Cursor::new(&buf[8..max_keys_pos as usize]);
     let restart_cursor = Cursor::new(&buf[max_keys_pos as usize..max_restarts_pos as usize]);

@@ -2,7 +2,6 @@ use std::{
     collections::{BTreeMap, HashMap, LinkedList},
     error::Error,
     fmt::Display,
-    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},

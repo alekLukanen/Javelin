@@ -83,8 +83,6 @@ struct CurrentBlock {
     keys_len: u64,
     key_offset: u64,
 
-    restart_len: u64,
-
     current_user_key: Option<Vec<u8>>,
 }
 
@@ -270,21 +268,17 @@ impl FileBlockIterator {
         let keys_len = buf_utils::read_u64(&mut cursor)?;
         let block_size = data.len() as u64;
 
-        // keys + keys len size
-        let max_keys_pos: u64 = keys_len + 8;
-
         // block size - crc32 and compression size
         let max_restarts_pos: u64 = block_size - 5;
 
-        if (max_restarts_pos - max_restarts_pos)
+        let (_, restart_pos) = buf_utils::restart_start_and_end_offsets(data)?;
+
+        if (max_restarts_pos - restart_pos)
             % self.db_context.config().sstable_restart_interval() as u64
             != 0
         {
             return Err(FileBlockIteratorError::RestartLenNotDivisibleByFour);
         }
-
-        let restart_len = (max_restarts_pos - max_keys_pos)
-            / self.db_context.config().sstable_restart_interval() as u64;
 
         // parse the crc32 and compression
         if !buf_utils::valid_block_crc32(data)? {
@@ -296,7 +290,6 @@ impl FileBlockIterator {
             data: data_block.clone(),
             keys_len: keys_len,
             key_offset: 0,
-            restart_len,
             current_user_key: None,
         });
 
