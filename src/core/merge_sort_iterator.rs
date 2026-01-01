@@ -5,6 +5,7 @@ use crate::core::{
     db::ReadState,
     db_context::DBContext,
     entry::LogEntry,
+    file_block_iterator::FileBlockIterator,
     iterator::{IteratorError, SourceIterator},
     memtable::{ImmutableMemtableIterator, Memtable, MemtableIterator},
 };
@@ -111,7 +112,7 @@ impl MergeSortIterator {
 
         /////////////////////////////////////////////////
         // scan through the memtables
-        let mut memtable_iters_to_delete: Vec<usize> = Vec::with_capacity(4);
+        let mut memtable_iters_to_delete: Vec<usize> = Vec::with_capacity(2);
         for idx in 0..self.memtable_iters.len() {
             // get the iterators current/next entry
             let (next_entry, iter_done) = self.find_next_valid_memtable_entry(&idx)?;
@@ -124,36 +125,28 @@ impl MergeSortIterator {
             }
         }
 
-        self.db_context.log_debug(format!(
-            "[MergeSortIterator] deleting memtable iters {:?}",
-            memtable_iters_to_delete
-        ));
+        // delete all iterators that are no longer needing to be used
+        // this will free up memory if the memtables have been flushed
+        for idx in memtable_iters_to_delete.iter().rev() {
+            self.memtable_iters.remove(*idx);
+        }
 
         // exit early if this is a single item get
         if self.upper_bound == self.lower_bound && primary_entry.is_some() {
+            self.db_context.log_debug(
+                "[MergeSortIterator] returning single item from memtable iters".to_string(),
+            );
+
             // free up resources
             self.memtable_iters = Vec::new();
             self.clear_sstable_iters();
 
             self.current_entry = primary_entry.clone();
             return Ok(primary_entry);
-        } else if self.upper_bound == self.lower_bound
-            && self
-                .sstable_level_iters
-                .values()
-                .filter(|item| item.loaded == true)
-                .count()
-                == self.sstable_level_iters.len()
-        {
-            self.current_entry = primary_entry.clone();
-            return Ok(primary_entry);
         }
 
-        // delete all iterators that are no longer needing to be used
-        // this will free up memory if the memtables have been flushed
-        for idx in memtable_iters_to_delete.iter().rev() {
-            self.memtable_iters.remove(*idx);
-        }
+        self.db_context
+            .log_debug("[MergeSortIterator] memtables didn't contain the value".to_string());
 
         /////////////////////////////////////////////////
         // scan through the sstable levels
@@ -161,15 +154,20 @@ impl MergeSortIterator {
             .read_state
             .sstable_version
             .sstable_levels
-            .keys()
-            .map(|item| item.clone())
+            .iter()
+            .filter(|(_, item)| item.sstables.len() > 0)
+            .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
         sstable_levels.sort();
 
         for level_idx in &sstable_levels {
+            self.db_context
+                .log_debug(format!("[MergeSortIterator] checking level={}", level_idx));
             let Some(next_entry) = self.get_sstable_current_entry(level_idx)? else {
                 continue;
             };
+            primary_entry = Some(next_entry);
+            break;
         }
 
         self.current_entry = primary_entry.clone();
@@ -281,6 +279,11 @@ impl MergeSortIterator {
             None => panic!("MergeSortIterator: requested level that doesn't exist"),
         };
 
+        self.db_context.log_debug(format!(
+            "[MergeSortIterator] checking if level={} is loaded | level_loaded={}",
+            level, level_loaded
+        ));
+
         if !level_loaded {
             self.load_sstable_iters(level)?;
         }
@@ -290,21 +293,111 @@ impl MergeSortIterator {
             .get_mut(level)
             .expect("MergeSortIterator: requested level tht doesn't exist");
 
-        for iter in &mut level_iters.iters {
-            let entry = match iter.current() {
-                Some(entry) => Some(entry),
-                None => match iter.next()? {
+        let mut primary_entry: Option<Arc<LogEntry>> = None;
+        let mut iterators_done: Vec<usize> = Vec::new();
+
+        for (idx, iter) in level_iters.iters.iter_mut().enumerate() {
+            loop {
+                let entry = match iter.current() {
                     Some(entry) => Some(entry),
-                    None => None,
-                },
-            };
-            return Ok(entry);
+                    None => match iter.next()? {
+                        Some(entry) => Some(entry),
+                        None => None,
+                    },
+                };
+
+                self.db_context
+                    .log_debug(format!("[MergeSortIterator] entry: {:?}", entry));
+
+                match entry {
+                    Some(entry) => {
+                        // is the entry from a newer log sequence
+                        if entry.log_seq_num > self.log_sequence_num {
+                            iter.next()?;
+                            continue;
+                        }
+
+                        // ignore entries that come before the lower bound
+                        match &self.lower_bound {
+                            Some(lower_bound) => match entry.entry.key_ref().cmp(lower_bound) {
+                                Ordering::Equal => {}
+                                Ordering::Less => {
+                                    iter.next()?;
+                                    continue;
+                                }
+                                Ordering::Greater => {}
+                            },
+                            None => {}
+                        }
+
+                        // ignore entries that come after the upper bound
+                        match &self.upper_bound {
+                            Some(upper_bound) => match entry.entry.key_ref().cmp(upper_bound) {
+                                Ordering::Equal => {}
+                                Ordering::Less => {}
+                                Ordering::Greater => {
+                                    iter.next()?;
+                                    continue;
+                                }
+                            },
+                            None => {}
+                        }
+
+                        // ignore any entries that exist for the same key
+                        match &self.current_entry {
+                            Some(current_entry) => {
+                                match entry.entry.key_ref().cmp(current_entry.entry.key_ref()) {
+                                    Ordering::Equal => {
+                                        iter.next()?;
+                                        continue;
+                                    }
+                                    Ordering::Less => {
+                                        panic!(
+                                            "new entry is less than current entry; this should never happen"
+                                        );
+                                    }
+                                    Ordering::Greater => {}
+                                }
+                            }
+                            None => {}
+                        }
+
+                        // set the primary entry if the new entry is less than the
+                        // current primary entry value
+                        match &primary_entry {
+                            Some(primary_entry_val) => {
+                                if *primary_entry_val > entry {
+                                    primary_entry = Some(entry)
+                                }
+                            }
+                            None => {
+                                primary_entry = Some(entry);
+                            }
+                        }
+                        break;
+                    }
+                    None => {
+                        iterators_done.push(idx);
+                        break;
+                    }
+                }
+            }
         }
 
-        Ok(None)
+        // remove the iterators that were completed
+        for idx in iterators_done.iter().rev() {
+            level_iters.iters.remove(*idx);
+        }
+
+        Ok(primary_entry)
     }
 
     fn load_sstable_iters(&mut self, level: &usize) -> Result<(), MergeSortIteratorError> {
+        self.db_context.log_debug(format!(
+            "[MergeSortIterator] loading sstables for level={}",
+            level
+        ));
+
         // TODO: get a list of all level-0 sstables that might contain the key
         let sstables = &self
             .read_state
@@ -315,9 +408,42 @@ impl MergeSortIterator {
             .sstables;
 
         if *level == 0 {
-            // TODO: improve this so only
+            // TODO: improve this so only the files that overlap with the range
+            // are loaded into the iterator
+
             // load all sstables
+            let mut iters: Vec<Box<dyn SourceIterator>> = Vec::new();
+            for key in sstables.keys() {
+                let iter = FileBlockIterator::new(
+                    self.db_context.clone(),
+                    self.block_cache.clone(),
+                    *key,
+                    self.log_sequence_num,
+                    self.lower_bound.clone(),
+                    self.upper_bound.clone(),
+                );
+                iters.push(Box::new(iter));
+            }
+
+            self.db_context.log_debug(format!(
+                "[MergeSortIterator] loaded {} sstables for level={}",
+                iters.len(),
+                level
+            ));
+
+            let level_ref = self
+                .sstable_level_iters
+                .get_mut(level)
+                .expect("MergeSortIterator: expected level iterator refs");
+            level_ref.iters = iters;
+            level_ref.loaded = true;
         } else {
+            // TODO: load the next sstable in the ordered list of files
+            self.db_context.log_error(format!(
+                "MergeSortIterator: levels above 0 are not supported | level={}",
+                level,
+            ));
+            todo!("MergeSortIterator: levels above 0 are not supported");
         }
         Ok(())
     }

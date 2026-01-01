@@ -100,6 +100,92 @@ fn test_simple_case_file_block_iterator_without_lower_and_upper_bounds()
 }
 
 #[test]
+fn test_large_case_file_block_iterator_without_lower_and_upper_bounds() -> Result<(), Box<dyn Error>>
+{
+    let temp_dir = TestContext::temp_dir()?;
+
+    let config = DBConfigBuilder::new()
+        .sstable_max_block_size(4_096)
+        .data_dir(temp_dir.dir())
+        .logging_enabled(true)
+        .debug_logging_eanbled(false)
+        .build();
+    let tc = TestContext::new_from_config(config);
+
+    let sample_config = SampleMemtableBuilder::IncreasingPuts {
+        size: 10_000,
+        starting_value: 0,
+        starting_log_sequence_num: 100,
+    };
+    let sample_memtable = sample_config.build(&tc)?;
+
+    let immuitable_memtable = Arc::new(ImmutableMemtable::new(
+        0,
+        tc.db_context.clone(),
+        sample_memtable,
+    )?);
+
+    let block_cache = Arc::new(BlockCache::new(
+        tc.db_context.clone(),
+        tc.memory_manager.clone(),
+    ));
+
+    // file attributes
+    let file_id = 1;
+
+    // create the table writer
+    let mut sstable_path = PathBuf::from(temp_dir.dir());
+    sstable_path.push(format!("{}.dat", file_id));
+    let mut sstable_writer = SSTableWriter::new(
+        tc.db_context.clone(),
+        SSTableBuilder::build_from_immutable_memtable(tc.db_context.clone(), immuitable_memtable),
+        sstable_path.clone(),
+    )?;
+
+    let mut block_idx = 0;
+    loop {
+        let Some(data_block) = sstable_writer.next_data_block()? else {
+            break;
+        };
+
+        block_cache.add_data_block(file_id, block_idx, data_block)?;
+        block_idx += 1;
+    }
+
+    let index_block = sstable_writer.index_block()?;
+    let meta_block = sstable_writer.meta_data_block()?;
+    let footer_block = sstable_writer.footer_block()?;
+    block_cache.add_sstable(file_id, footer_block, index_block, meta_block)?;
+
+    // drop the writer to close the file
+    drop(sstable_writer);
+
+    let log_sequence_num: u64 = 200;
+    let mut iter = FileBlockIterator::new(
+        tc.db_context.clone(),
+        block_cache.clone(),
+        file_id,
+        log_sequence_num,
+        None,
+        None,
+    );
+
+    let mut sample_log_entries = sample_config.build_log_entries(&tc)?;
+
+    loop {
+        let Some(entry) = iter.next()? else {
+            break;
+        };
+
+        sample_log_entries.assert_contains_entry(entry);
+    }
+
+    sample_log_entries.assert_all_entries_found();
+
+    Ok(())
+}
+
+#[test]
 fn test_simple_case_file_block_iterator_with_lower_but_no_upper_bound() -> Result<(), Box<dyn Error>>
 {
     let temp_dir = TestContext::temp_dir()?;
@@ -148,7 +234,7 @@ fn test_simple_case_file_block_iterator_with_lower_but_no_upper_bound() -> Resul
             break;
         };
 
-        println!("adding data block to cache");
+        println!("adding data block {} to cache", block_idx);
         block_cache.add_data_block(file_id, block_idx, data_block)?;
         block_idx += 1;
     }

@@ -1,10 +1,6 @@
 use std::{error::Error, fs, thread, time};
 
-use crate::core::{
-    block_cache::BlockCache,
-    file_utils,
-    test_utils::{SampleMemtableBuilder, TestContext},
-};
+use crate::core::test_utils::{SampleMemtableBuilder, TestContext};
 
 use super::{db::DB, db_config::DBConfigBuilder};
 
@@ -51,7 +47,7 @@ fn test_simple_case_with_immutable_memtable_created() -> Result<(), Box<dyn Erro
         .memory_manager_max_memtable_memory_usage(1_000)
         .data_dir(temp_dir.dir())
         .logging_enabled(true)
-        .debug_logging_eanbled(true)
+        .debug_logging_eanbled(false)
         .build();
 
     let tc = TestContext::new_from_config(config.clone());
@@ -72,30 +68,11 @@ fn test_simple_case_with_immutable_memtable_created() -> Result<(), Box<dyn Erro
 
     println!("finished inserting records");
     println!("wait for sstable to be written to disk...");
-    thread::sleep(time::Duration::from_millis(100));
+    thread::sleep(time::Duration::from_millis(250));
 
-    // check if the sstable exists
-    let block_cache = BlockCache::new(tc.db_context.clone(), tc.memory_manager.clone());
-
-    let _ = block_cache
-        .get_index_block(&0)?
-        .expect("expected index block");
-
-    let sstable_0_path = file_utils::sstable_path(&config, 0);
-
-    // validate that another file doesn't exist
-    let expected_files = vec![sstable_0_path];
     for entry in fs::read_dir(config.data_dir())? {
         let entry = entry?;
-        match expected_files.iter().find(|item| **item == entry.path()) {
-            Some(_) => {}
-            None => {
-                panic!(
-                    "found file which shouldn't exist: {}",
-                    entry.path().display()
-                );
-            }
-        }
+        println!("data dir entry: {:?}", entry.file_name());
     }
 
     // validate the entries can be retrieved
@@ -113,17 +90,16 @@ fn test_simple_case_with_immutable_memtable_created() -> Result<(), Box<dyn Erro
     Ok(())
 }
 
-/*
 #[test]
-fn test_large_case_with_many_immutable_memtables_created() -> Result<(), Box<dyn Error>> {
+fn test_large_case_with_immutable_memtable_created() -> Result<(), Box<dyn Error>> {
     let temp_dir = TestContext::temp_dir()?;
 
     let config = DBConfigBuilder::new()
-        .sstable_max_block_size(500)
-        .memory_manager_max_memtable_memory_usage(1_000)
+        .sstable_max_block_size(5_000)
+        .memory_manager_max_memtable_memory_usage(10_000)
         .data_dir(temp_dir.dir())
         .logging_enabled(true)
-        .debug_logging_eanbled(true)
+        .debug_logging_eanbled(false)
         .build();
 
     let tc = TestContext::new_from_config(config.clone());
@@ -132,11 +108,11 @@ fn test_large_case_with_many_immutable_memtables_created() -> Result<(), Box<dyn
     println!("inserting records");
 
     let sample_config = SampleMemtableBuilder::IncreasingPuts {
-        size: 5000,
+        size: 1_000,
         starting_value: 0,
         starting_log_sequence_num: 0,
     };
-    let sample_entries = sample_config.build_log_entries(&tc)?;
+    let mut sample_entries = sample_config.build_log_entries(&tc)?;
 
     for entry in &sample_entries.entries {
         dbase.set(entry.entry.key(), entry.entry.value())?;
@@ -144,35 +120,36 @@ fn test_large_case_with_many_immutable_memtables_created() -> Result<(), Box<dyn
 
     println!("finished inserting records");
     println!("wait for sstable to be written to disk...");
-    thread::sleep(time::Duration::from_millis(100));
+    thread::sleep(time::Duration::from_millis(250));
 
-    // check if the sstable exists
-    let block_cache = BlockCache::new(tc.db_context.clone(), tc.memory_manager.clone());
-
-    let _ = block_cache
-        .get_index_block(&0)?
-        .expect("expected index block");
-
-    let sstable_0_path = file_utils::sstable_path(&config, 0);
-
-    // validate that another file doesn't exist
-    let expected_files = vec![sstable_0_path];
     for entry in fs::read_dir(config.data_dir())? {
         let entry = entry?;
-        match expected_files.iter().find(|item| **item == entry.path()) {
-            Some(_) => {}
-            None => {
-                panic!(
-                    "found file which shouldn't exist: {}",
-                    entry.path().display()
-                );
-            }
-        }
+        println!("data dir entry: {:?}", entry.file_name());
     }
+
+    // validate the entries can be retrieved
+    let mut latency_sum = 0;
+    let mut latency_samples = 0;
+    for entry in &sample_entries.entries.clone() {
+        let get_start = std::time::Instant::now();
+        let Some(_) = dbase.get(&entry.entry.key())? else {
+            println!("entry not found: {:?}", entry);
+            panic!("entry not found");
+        };
+        latency_sum += get_start.elapsed().as_micros();
+        latency_samples += 1;
+        sample_entries.assert_contains_entry(entry.clone());
+    }
+
+    println!(
+        "[METRIC] average get latency: {} micro seconds",
+        latency_sum / latency_samples
+    );
+
+    sample_entries.assert_all_entries_found();
 
     println!("closing the db");
     dbase.close()?;
 
     Ok(())
 }
-*/

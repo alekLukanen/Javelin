@@ -30,6 +30,7 @@ impl DBContext {
         if !self.config.logging_enabled() {
             return;
         }
+
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -38,6 +39,10 @@ impl DBContext {
     }
 
     pub fn log_error(&self, msg: String) {
+        if !self.config().debug_logging_enabled() || !self.config().logging_enabled() {
+            return;
+        }
+
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

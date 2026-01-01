@@ -178,7 +178,7 @@ fn test_simple_case_memtables_only_with_equal_bounds() -> Result<(), Box<dyn Err
     let active_memtable = SampleMemtableBuilder::IncreasingPuts {
         size: 10,
         starting_value: 0,
-        starting_log_sequence_num: 0,
+        starting_log_sequence_num: 100,
     }
     .build(&tc)?;
     let immuitable_memtable = Arc::new(ImmutableMemtable::new(
@@ -187,7 +187,7 @@ fn test_simple_case_memtables_only_with_equal_bounds() -> Result<(), Box<dyn Err
         SampleMemtableBuilder::IncreasingPuts {
             size: 10,
             starting_value: 5,
-            starting_log_sequence_num: 100,
+            starting_log_sequence_num: 0,
         }
         .build(&tc)?,
     )?);

@@ -91,7 +91,7 @@ impl MemoryPool {
     }
 
     pub fn allocate(&self, amount: usize) -> Result<bool, MemoryPoolError> {
-        self.db_context.log_info(format!(
+        self.db_context.log_debug(format!(
             "[allocate] usage: {}, amount: {}",
             self.usage.load(atomic::Ordering::SeqCst),
             amount
@@ -103,7 +103,7 @@ impl MemoryPool {
                 if old + amount <= self.max_usage {
                     return Ok(true);
                 }
-                self.db_context.log_info("subtracing".to_string());
+                self.db_context.log_debug("subtracing".to_string());
                 self.usage.fetch_sub(amount, atomic::Ordering::SeqCst);
             }
 
@@ -133,7 +133,7 @@ impl MemoryPool {
     }
 
     pub fn deallocate(&self, amount: usize) -> Result<(), MemoryPoolError> {
-        self.db_context.log_info(format!(
+        self.db_context.log_debug(format!(
             "[deallocate] usage: {}, amount: {}",
             self.usage.load(atomic::Ordering::SeqCst),
             amount

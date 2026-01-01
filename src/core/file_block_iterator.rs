@@ -176,9 +176,6 @@ impl FileBlockIterator {
                         ));
                     };
 
-                    self.db_context
-                        .log_debug(format!("index_block.len(): {}", index_block.len(),));
-
                     let (mut entry_cursor, mut restart_cursor) =
                         buf_utils::entry_and_restart_cursors(&index_block)?;
 
@@ -198,14 +195,8 @@ impl FileBlockIterator {
                         restart_cursor.set_position(middle_offset);
                         let index_key_offset = buf_utils::read_u32(&mut restart_cursor)?;
 
-                        self.db_context
-                            .log_debug(format!("index_key_offset: {}", index_key_offset));
-
                         entry_cursor.set_position(index_key_offset as u64);
                         let index_key_entry = buf_utils::read_entry(&mut entry_cursor)?;
-
-                        self.db_context
-                            .log_debug(format!("index_key_entry: {:?}", index_key_entry));
 
                         let key = index_key_entry.user_key_suffix();
 
@@ -233,8 +224,8 @@ impl FileBlockIterator {
                     let data_block_id = lowest_restart_idx
                         * self.db_context.config().sstable_restart_interval() as u64;
 
-                    self.set_block(data_block_id as u32)?;
-                    self.seek_block_lower_bound()?;
+                    self.set_block(data_block_id.clone() as u32)?;
+                    let _ = self.seek_block_lower_bound()?;
 
                     Ok(true)
                 }
@@ -377,10 +368,10 @@ impl FileBlockIterator {
             return Ok(None);
         };
 
-        while current_block.key_offset < current_block.keys_len {
-            let lower_bound = &self.lower_bound;
-            let upper_bound = &self.upper_bound;
+        let lower_bound = &self.lower_bound;
+        let upper_bound = &self.upper_bound;
 
+        while current_block.key_offset < current_block.keys_len {
             match &current_block.current_user_key {
                 Some(current_user_key) => {
                     let mut key_cursor = current_block.key_cursor();
@@ -405,6 +396,8 @@ impl FileBlockIterator {
                     current_block.key_offset = new_key_offset;
 
                     if !Self::within_lower_bound(lower_bound, &temp_user_key) {
+                        self.db_context
+                            .log_debug(format!("entry out of bound: {:?}", entry));
                         continue;
                     }
                     if !Self::within_upper_bound(upper_bound, &temp_user_key) {
@@ -433,6 +426,8 @@ impl FileBlockIterator {
                     current_block.key_offset = new_key_offset;
 
                     if !Self::within_lower_bound(lower_bound, &user_key) {
+                        self.db_context
+                            .log_debug(format!("entry out of bound: {:?}", entry));
                         continue;
                     }
                     if !Self::within_upper_bound(upper_bound, &user_key) {
@@ -494,17 +489,22 @@ impl FileBlockIterator {
     }
 
     fn next_iter_entry(&mut self) -> Result<Option<Arc<LogEntry>>, FileBlockIteratorError> {
-        if !self.find_block()? {
-            self.current_entry = None;
-            return Ok(None);
-        }
-
-        match &self.current_block {
-            Some(_) => {
-                let row = self.build_next_entry()?;
-                Ok(row)
+        loop {
+            if !self.find_block()? {
+                self.current_entry = None;
+                return Ok(None);
             }
-            None => Ok(None),
+
+            match &self.current_block {
+                Some(_) => match self.build_next_entry()? {
+                    Some(entry) => {
+                        self.current_entry = Some(entry.clone());
+                        return Ok(Some(entry));
+                    }
+                    None => continue,
+                },
+                None => return Ok(None),
+            }
         }
     }
 }

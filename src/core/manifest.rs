@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -30,7 +30,7 @@ impl Default for SSTableVersion {
 
 #[derive(Clone)]
 pub struct SSTableLevel {
-    pub(crate) sstables: HashSet<u64>,
+    pub(crate) sstables: BTreeMap<u64, ()>,
 }
 
 pub struct Manifest {
@@ -48,7 +48,7 @@ impl Manifest {
             sstable_levels.insert(
                 idx,
                 SSTableLevel {
-                    sstables: HashSet::new(),
+                    sstables: BTreeMap::new(),
                 },
             );
         }
@@ -73,7 +73,7 @@ impl Manifest {
             .get_mut(&0)
             .expect("expected level 0")
             .sstables
-            .insert(file_num);
+            .insert(file_num, ());
 
         self.sstable_version = Arc::new(sv);
         self.flushing_memtables.remove(&memtable_id);

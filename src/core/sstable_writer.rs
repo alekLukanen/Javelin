@@ -208,10 +208,8 @@ impl SSTableWriter {
 
         self.file.write_all(&data)?;
 
-        self.db_context.log_debug(format!(
-            "[SSTableWriter] meta data: data.len()={}",
-            data.len(),
-        ));
+        self.db_context
+            .log_debug(format!("[SSTableWriter] meta data: {:?}", meta_data_block,));
 
         assert_eq!(size, data.len());
 
