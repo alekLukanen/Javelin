@@ -12,8 +12,8 @@ use super::{
 };
 
 pub struct TestContext {
-    pub(crate) db_context: Arc<DBContext>,
-    pub(crate) memory_manager: Arc<MemoryManager>,
+    pub db_context: Arc<DBContext>,
+    pub memory_manager: Arc<MemoryManager>,
 }
 
 impl TestContext {
@@ -70,7 +70,7 @@ impl Drop for TempDir {
 ///////////////////////////////////////////////////////
 // Create sample data
 
-pub(crate) enum SampleMemtableBuilder {
+pub enum SampleMemtableBuilder {
     IncreasingPuts {
         size: u64,
         starting_value: u64,
@@ -84,12 +84,12 @@ pub(crate) enum SampleMemtableBuilder {
 }
 
 impl SampleMemtableBuilder {
-    pub(crate) fn build_log_entries(&self, tc: &TestContext) -> Result<LogEntries, Box<dyn Error>> {
+    pub fn build_log_entries(&self, tc: &TestContext) -> Result<LogEntries, Box<dyn Error>> {
         Ok(LogEntries::new(
             self.build(tc)?.skip_list_iter().collect::<Vec<_>>(),
         ))
     }
-    pub(crate) fn build(&self, tc: &TestContext) -> Result<Arc<Memtable>, Box<dyn Error>> {
+    pub fn build(&self, tc: &TestContext) -> Result<Arc<Memtable>, Box<dyn Error>> {
         let table = Arc::new(Memtable::new(
             tc.db_context.clone(),
             tc.memory_manager.clone(),
@@ -142,8 +142,8 @@ impl SampleMemtableBuilder {
 }
 
 pub struct LogEntries {
-    pub(crate) entries: Vec<Arc<LogEntry>>,
-    pub(crate) entries_asserted: Vec<bool>,
+    pub entries: Vec<Arc<LogEntry>>,
+    pub entries_asserted: Vec<bool>,
 }
 
 impl LogEntries {
@@ -153,7 +153,7 @@ impl LogEntries {
             entries_asserted: vec![false; entries.len()],
         }
     }
-    pub(crate) fn assert_contains_entry(&mut self, entry: Arc<LogEntry>) {
+    pub fn assert_contains_entry(&mut self, entry: Arc<LogEntry>) {
         match self
             .entries
             .iter()
@@ -168,7 +168,7 @@ impl LogEntries {
             }
         }
     }
-    pub(crate) fn assert_all_entries_found(&self) {
+    pub fn assert_all_entries_found(&self) {
         let mut entries_found = 0;
         for (idx, entry) in self.entries.iter().enumerate() {
             if !self.entries_asserted.get(idx).unwrap() {
@@ -185,11 +185,7 @@ impl LogEntries {
             );
         }
     }
-    pub(crate) fn filter_in_bounds(
-        &mut self,
-        lower_bound: Option<Vec<u8>>,
-        upper_bound: Option<Vec<u8>>,
-    ) {
+    pub fn filter_in_bounds(&mut self, lower_bound: Option<Vec<u8>>, upper_bound: Option<Vec<u8>>) {
         let mut entries = Vec::new();
         for entry in &self.entries {
             match &lower_bound {

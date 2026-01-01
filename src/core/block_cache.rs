@@ -336,6 +336,8 @@ pub struct BlockCacheInner {
 impl BlockCacheInner {
     fn maintain(&self) -> Result<(), BlockCacheError> {
         loop {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
             if self.close_called.load(Ordering::Relaxed) {
                 self.db_context
                     .log_info(format!("[BlockCache] Exiting the maintain loop"));
@@ -366,7 +368,6 @@ impl BlockCacheInner {
             for key in keys_to_delete {
                 shard.data_blocks.remove(&key);
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
         }
         Ok(())
     }

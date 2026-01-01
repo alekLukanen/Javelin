@@ -149,15 +149,8 @@ impl FileBlockIterator {
                 }
 
                 match self.set_block(next_block_idx) {
-                    Ok(_) => {
-                        self.db_context
-                            .log_debug(format!("set block to: {}", next_block_idx));
-                        Ok(true)
-                    }
-                    Err(FileBlockIteratorError::DataBlockNotFound(_, _)) => {
-                        self.db_context.log_debug(format!("at end of sstable"));
-                        Ok(false)
-                    }
+                    Ok(_) => Ok(true),
+                    Err(FileBlockIteratorError::DataBlockNotFound(_, _)) => Ok(false),
                     Err(err) => Err(err),
                 }
             }
@@ -165,9 +158,6 @@ impl FileBlockIterator {
             // fetch the initial block depending on the configuration
             None => match &self.lower_bound {
                 Some(lower_bound) => {
-                    self.db_context
-                        .log_debug("finding block with lower bound".to_string());
-
                     // find the first block in the file that might contain
                     // the lower_bound
                     let Some(index_block) = self.block_cache.get_index_block(&self.file_id)? else {
@@ -187,10 +177,6 @@ impl FileBlockIterator {
                     while left <= right {
                         let middle = left + (right - left) / 2;
                         let middle_offset = middle * 4;
-                        self.db_context.log_debug(format!(
-                            "left: {}, right: {}, middle: {}",
-                            left, right, middle
-                        ));
 
                         restart_cursor.set_position(middle_offset);
                         let index_key_offset = buf_utils::read_u32(&mut restart_cursor)?;
@@ -230,8 +216,6 @@ impl FileBlockIterator {
                     Ok(true)
                 }
                 None => {
-                    self.db_context
-                        .log_debug("setting up initial block".to_string());
                     self.set_block(0)?;
                     Ok(true)
                 }
@@ -240,9 +224,6 @@ impl FileBlockIterator {
     }
 
     fn set_block(&mut self, block_id: u32) -> Result<(), FileBlockIteratorError> {
-        self.db_context
-            .log_debug(format!("set_block: block_id={}", block_id));
-
         let Some(data_block) = self.block_cache.get_data_block(&self.file_id, &block_id)? else {
             return Err(FileBlockIteratorError::DataBlockNotFound(
                 self.file_id.clone(),
@@ -268,11 +249,6 @@ impl FileBlockIterator {
             return Err(FileBlockIteratorError::RestartLenNotDivisibleByFour);
         }
 
-        // parse the crc32 and compression
-        if !buf_utils::valid_block_crc32(data)? {
-            return Err(FileBlockIteratorError::InvalidCRC32);
-        }
-
         self.current_block = Some(CurrentBlock {
             idx: block_id,
             data: data_block.clone(),
@@ -287,9 +263,6 @@ impl FileBlockIterator {
     fn seek_block_lower_bound(&mut self) -> Result<bool, FileBlockIteratorError> {
         match (&self.lower_bound, &mut self.current_block) {
             (Some(lower_bound), Some(current_block)) => {
-                self.db_context
-                    .log_debug("seek block lower bound".to_string());
-
                 let data_block = current_block.data.data_block_ref();
 
                 let (mut entry_cursor, mut restart_cursor) =
@@ -302,10 +275,6 @@ impl FileBlockIterator {
                 while left <= right {
                     let middle = left + (right - left) / 2;
                     let middle_offset = middle * 4;
-                    self.db_context.log_debug(format!(
-                        "left: {}, right: {}, middle: {}",
-                        left, right, middle
-                    ));
 
                     restart_cursor.set_position(middle_offset);
                     let entry_offset = buf_utils::read_u32(&mut restart_cursor)?;
@@ -351,9 +320,6 @@ impl FileBlockIterator {
                     }
                 }
 
-                self.db_context
-                    .log_debug(format!("lowest_entry_offset: {}", lowest_entry_offset));
-
                 current_block.key_offset = lowest_entry_offset;
                 Ok(true)
             }
@@ -396,8 +362,6 @@ impl FileBlockIterator {
                     current_block.key_offset = new_key_offset;
 
                     if !Self::within_lower_bound(lower_bound, &temp_user_key) {
-                        self.db_context
-                            .log_debug(format!("entry out of bound: {:?}", entry));
                         continue;
                     }
                     if !Self::within_upper_bound(upper_bound, &temp_user_key) {
@@ -426,8 +390,6 @@ impl FileBlockIterator {
                     current_block.key_offset = new_key_offset;
 
                     if !Self::within_lower_bound(lower_bound, &user_key) {
-                        self.db_context
-                            .log_debug(format!("entry out of bound: {:?}", entry));
                         continue;
                     }
                     if !Self::within_upper_bound(upper_bound, &user_key) {

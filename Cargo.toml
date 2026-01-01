@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 crc = "3.4.0"
 fastrand = "2.3.0"
+jemallocator = "0.5.4"

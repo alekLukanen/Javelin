@@ -17,6 +17,8 @@ pub mod sstable_reader;
 pub mod sstable_writer;
 pub mod wal;
 
+pub mod test_utils;
+
 #[cfg(test)]
 mod test_db;
 #[cfg(test)]
@@ -29,5 +31,3 @@ mod test_skiplist;
 mod test_sstable_builder;
 #[cfg(test)]
 mod test_sstable_writer_reader;
-#[cfg(test)]
-mod test_utils;

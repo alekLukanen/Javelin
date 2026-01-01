@@ -2,8 +2,8 @@ use std::cmp::Ordering;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LogEntry {
-    pub(crate) entry: Entry,
-    pub(crate) log_seq_num: u64,
+    pub entry: Entry,
+    pub log_seq_num: u64,
 }
 
 impl LogEntry {
