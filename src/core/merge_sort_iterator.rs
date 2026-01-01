@@ -18,7 +18,9 @@ pub enum MergeSortIteratorError {
 impl Display for MergeSortIteratorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::SourceIteratorError(err) => write!(f, "SourceIteratorError: {}", err),
+            Self::SourceIteratorError(err) => {
+                write!(f, "MergeSortIteratorError::SourceIteratorError: {}", err)
+            }
         }
     }
 }

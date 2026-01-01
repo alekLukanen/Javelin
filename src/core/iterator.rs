@@ -10,7 +10,7 @@ pub enum IteratorError {
 impl Display for IteratorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::SourceError(err) => write!(f, "SourceError: {:?}", err),
+            Self::SourceError(err) => write!(f, "IteratorError::SourceError: {}", err),
         }
     }
 }

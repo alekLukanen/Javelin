@@ -25,8 +25,8 @@ fn large_db_test() -> Result<(), Box<dyn Error>> {
     let temp_dir = TestContext::temp_dir()?;
 
     let config = DBConfigBuilder::new()
-        .sstable_max_block_size(5_000)
-        .memory_manager_max_memtable_memory_usage(10_000)
+        .sstable_max_block_size(4_096)
+        .memory_manager_max_memtable_memory_usage(50_000)
         .data_dir(temp_dir.dir())
         .logging_enabled(true)
         .debug_logging_eanbled(false)
@@ -38,7 +38,7 @@ fn large_db_test() -> Result<(), Box<dyn Error>> {
     println!("inserting records");
 
     let sample_config = SampleMemtableBuilder::IncreasingPuts {
-        size: 10_000,
+        size: 15_000,
         starting_value: 0,
         starting_log_sequence_num: 0,
     };
@@ -62,10 +62,18 @@ fn large_db_test() -> Result<(), Box<dyn Error>> {
     let mut latency_samples = 0;
     for entry in &sample_entries.entries.clone() {
         let get_start = std::time::Instant::now();
-        let Some(_) = dbase.get(&entry.entry.key())? else {
-            println!("entry not found: {:?}", entry);
-            panic!("entry not found");
-        };
+        let res = dbase.get(&entry.entry.key());
+        match res {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                println!("entry not found: {:?}", entry);
+                panic!("entry not found");
+            }
+            Err(err) => {
+                println!("error: {}", err);
+                panic!("received error");
+            }
+        }
         latency_sum += get_start.elapsed().as_micros();
         latency_samples += 1;
         sample_entries.assert_contains_entry(entry.clone());

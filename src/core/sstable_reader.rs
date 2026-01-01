@@ -6,9 +6,7 @@ use crc::{CRC_32_CKSUM, Crc};
 
 use crate::core::buf_utils::{self, BufUtilsError};
 use crate::core::db_context::DBContext;
-use crate::core::sstable_builder::{
-    BlockHandle, DataBlock, FooterBlock, MetaDataBlock, PrefixCompressedEntry,
-};
+use crate::core::sstable_builder::{BlockHandle, FooterBlock, MetaDataBlock};
 
 const CRC32: Crc<u32> = Crc::<u32>::new(&CRC_32_CKSUM);
 

@@ -19,9 +19,11 @@ pub enum BufUtilsError {
 impl Display for BufUtilsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::RestartLenNotDivisibleByFour => write!(f, "RestartLenNotDivisibleByFour"),
-            Self::IOError(err) => write!(f, "IOError: {}", err),
-            Self::EntryMalformed(msg) => write!(f, "EntryMalformed: {}", msg),
+            Self::RestartLenNotDivisibleByFour => {
+                write!(f, "BufUtilsError::RestartLenNotDivisibleByFour")
+            }
+            Self::IOError(err) => write!(f, "BufUtilsError::IOError: {}", err),
+            Self::EntryMalformed(msg) => write!(f, "BufUtilsError::EntryMalformed: {}", msg),
         }
     }
 }
@@ -49,27 +51,49 @@ pub(crate) fn read_handle(cursor: &mut Cursor<&[u8]>) -> Result<BlockHandle, io:
     Ok(BlockHandle { offset, size })
 }
 
-/*
 #[inline]
 pub(crate) fn read_u8(cursor: &mut Cursor<&[u8]>) -> Result<u8, io::Error> {
     let mut buf = [0u8; 1];
     cursor.read_exact(&mut buf)?;
     Ok(u8::from_le_bytes(buf))
 }
-*/
 
 #[inline]
 pub(crate) fn read_u32(cursor: &mut Cursor<&[u8]>) -> Result<u32, io::Error> {
-    let mut buf = [0u8; 4];
-    cursor.read_exact(&mut buf)?;
-    Ok(u32::from_le_bytes(buf))
+    let start = cursor.position() as usize;
+    let end = cursor.position() as usize + 4;
+    let data = cursor.get_ref();
+
+    if end > data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "out of bounds",
+        ));
+    }
+
+    let bytes: [u8; 4] = data[start..end].try_into().unwrap();
+    cursor.set_position(end as u64);
+
+    Ok(u32::from_le_bytes(bytes))
 }
 
 #[inline]
 pub(crate) fn read_u64(cursor: &mut Cursor<&[u8]>) -> Result<u64, io::Error> {
-    let mut buf = [0u8; 8];
-    cursor.read_exact(&mut buf)?;
-    Ok(u64::from_le_bytes(buf))
+    let start = cursor.position() as usize;
+    let end = cursor.position() as usize + 8;
+    let data = cursor.get_ref();
+
+    if end > data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "out of bounds",
+        ));
+    }
+
+    let bytes: [u8; 8] = data[start..end].try_into().unwrap();
+    cursor.set_position(end as u64);
+
+    Ok(u64::from_le_bytes(bytes))
 }
 
 #[inline]
@@ -78,6 +102,20 @@ pub(crate) fn read_n(cursor: &mut Cursor<&[u8]>, n: usize) -> Result<Vec<u8>, io
     buf.resize(n, 0);
     cursor.read_exact(&mut buf)?;
     Ok(buf)
+}
+
+#[inline]
+pub(crate) fn read_n_ref<'a>(buf: &'a [u8], start: usize, n: usize) -> Result<&'a [u8], io::Error> {
+    let end = start + n;
+
+    if end > buf.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "out of bounds",
+        ));
+    }
+
+    Ok(&buf[start..end])
 }
 
 #[inline]
@@ -146,6 +184,61 @@ pub(crate) fn read_entry(
     };
 
     Ok(entry)
+}
+
+pub struct EntryBufRef<'a> {
+    pub key_suffix: &'a [u8],
+    pub value: &'a [u8],
+    pub log_seq_num: u64,
+    pub entry_type: u8,
+    pub entry_end_pos: usize,
+
+    pub shared_len: u32,
+    pub unshared_len: u32,
+}
+
+#[inline]
+pub(crate) fn read_entry_buf_ref<'a>(
+    buf: &'a [u8],
+    start_pos: usize,
+) -> Result<EntryBufRef<'a>, BufUtilsError> {
+    let shared_len_bytes: [u8; 4] = buf[start_pos..start_pos + 4].try_into().unwrap();
+    let shared_len = u32::from_le_bytes(shared_len_bytes);
+
+    let unshared_len_bytes: [u8; 4] = buf[start_pos + 4..start_pos + 8].try_into().unwrap();
+    let unshared_len = u32::from_le_bytes(unshared_len_bytes);
+
+    let value_len_bytes: [u8; 4] = buf[start_pos + 8..start_pos + 12].try_into().unwrap();
+    let value_len = u32::from_le_bytes(value_len_bytes);
+
+    let after_key_pos = start_pos + 12 + unshared_len as usize;
+    let entry_end_pos = after_key_pos + 9 + value_len as usize;
+
+    if after_key_pos + 9 + value_len as usize > buf.len() {
+        return Err(BufUtilsError::EntryMalformed(
+            "prefix compressed entry length longer than cursor".to_string(),
+        ));
+    }
+
+    // Now it is safe to borrow immutably
+    let key_suffix = read_n_ref(buf, start_pos + 12, unshared_len as usize)?;
+
+    let log_seq_num_bytes: [u8; 8] = buf[after_key_pos..after_key_pos + 8].try_into().unwrap();
+    let log_seq_num = u64::from_le_bytes(log_seq_num_bytes);
+
+    let value = read_n_ref(buf, after_key_pos + 9, value_len as usize)?;
+
+    let entry_type = buf[after_key_pos + 8];
+
+    Ok(EntryBufRef {
+        key_suffix,
+        value,
+        log_seq_num,
+        entry_type,
+        entry_end_pos,
+        shared_len,
+        unshared_len,
+    })
 }
 
 #[inline]
