@@ -101,8 +101,6 @@ struct CurrentBlock {
 
     keys_len: u64,
     key_offset: u64,
-
-    current_user_key: Option<Vec<u8>>,
 }
 
 impl CurrentBlock {
@@ -127,6 +125,8 @@ pub struct FileBlockIterator {
 
     current_block: Option<CurrentBlock>,
     current_entry: Option<Arc<LogEntry>>,
+
+    current_user_key: Option<Vec<u8>>,
 }
 
 impl FileBlockIterator {
@@ -149,6 +149,7 @@ impl FileBlockIterator {
 
             current_block: None,
             current_entry: None,
+            current_user_key: None,
         }
     }
 
@@ -288,8 +289,8 @@ impl FileBlockIterator {
             data: data_block.clone(),
             keys_len: keys_len,
             key_offset: 0,
-            current_user_key: None,
         });
+        self.current_user_key = None;
 
         Ok(())
     }
@@ -366,9 +367,6 @@ impl FileBlockIterator {
     }
 
     fn build_next_entry(&mut self) -> Result<Option<Arc<LogEntry>>, FileBlockIteratorError> {
-        // rebuild the entry from the prefix compressed entries
-        // TODO: need to also check the log sequence number
-
         let Some(current_block) = &mut self.current_block else {
             return Ok(None);
         };
@@ -377,85 +375,47 @@ impl FileBlockIterator {
         let upper_bound = &self.upper_bound;
 
         while current_block.key_offset < current_block.keys_len {
-            match &current_block.current_user_key {
-                Some(current_user_key) => {
-                    let key_data = current_block.key_data().unwrap();
-                    let entry_buf_ref =
-                        buf_utils::read_entry_buf_ref(key_data, current_block.key_offset as usize)?;
+            let key_data = current_block.key_data().unwrap();
+            let entry_buf_ref =
+                buf_utils::read_entry_buf_ref(key_data, current_block.key_offset as usize)?;
 
-                    // rebuild the user key
-                    let shared_user_key = &current_user_key[0..entry_buf_ref.shared_len as usize];
-                    let user_key_suffix = entry_buf_ref.key_suffix;
-                    let mut temp_user_key = Vec::with_capacity(
-                        entry_buf_ref.shared_len as usize + entry_buf_ref.unshared_len as usize,
-                    );
-                    temp_user_key.extend_from_slice(shared_user_key);
-                    temp_user_key.extend_from_slice(user_key_suffix);
+            // Rebuild user key in-place, reusing the buffer
+            let user_key_buf = if let Some(buf) = &mut self.current_user_key {
+                buf.truncate(entry_buf_ref.shared_len as usize);
+                buf.extend_from_slice(entry_buf_ref.key_suffix);
+                buf
+            } else {
+                let mut buf = Vec::with_capacity(
+                    entry_buf_ref.shared_len as usize + entry_buf_ref.unshared_len as usize,
+                );
+                buf.extend_from_slice(entry_buf_ref.key_suffix);
+                self.current_user_key = Some(buf);
+                self.current_user_key.as_ref().unwrap()
+            };
 
-                    if !Self::within_lower_bound(lower_bound, &temp_user_key) {
-                        current_block.key_offset = entry_buf_ref.entry_end_pos as u64;
-                        current_block.current_user_key = Some(temp_user_key.clone());
-
-                        continue;
-                    }
-                    if !Self::within_upper_bound(upper_bound, &temp_user_key) {
-                        current_block.key_offset = entry_buf_ref.entry_end_pos as u64;
-                        current_block.current_user_key = Some(temp_user_key.clone());
-
-                        break;
-                    }
-
-                    let log_seq_num = entry_buf_ref.log_seq_num;
-                    let entry_type = entry_buf_ref.entry_type;
-                    let val = entry_buf_ref.value.to_vec();
-
-                    current_block.key_offset = entry_buf_ref.entry_end_pos as u64;
-                    current_block.current_user_key = Some(temp_user_key.clone());
-
-                    return Ok(Some(Self::rebuild_entry(
-                        temp_user_key,
-                        val,
-                        log_seq_num,
-                        entry_type,
-                    )));
-                }
-                None => {
-                    let key_data = current_block.key_data().unwrap();
-                    let entry_buf_ref =
-                        buf_utils::read_entry_buf_ref(key_data, current_block.key_offset as usize)?;
-
-                    let user_key = entry_buf_ref.key_suffix;
-                    let new_key_offset = entry_buf_ref.entry_end_pos;
-
-                    if !Self::within_lower_bound(lower_bound, user_key) {
-                        current_block.current_user_key = Some(user_key.to_vec());
-                        current_block.key_offset = new_key_offset as u64;
-
-                        continue;
-                    }
-                    if !Self::within_upper_bound(upper_bound, user_key) {
-                        current_block.current_user_key = Some(user_key.to_vec());
-                        current_block.key_offset = new_key_offset as u64;
-
-                        break;
-                    }
-
-                    let val = entry_buf_ref.value.to_vec();
-                    let log_seq_num = entry_buf_ref.log_seq_num;
-                    let entry_type = entry_buf_ref.entry_type;
-                    let user_key = entry_buf_ref.key_suffix.to_vec();
-
-                    current_block.current_user_key = Some(user_key.to_vec());
-                    current_block.key_offset = new_key_offset as u64;
-
-                    return Ok(Some(Self::rebuild_entry(
-                        user_key.to_vec(),
-                        val,
-                        log_seq_num,
-                        entry_type,
-                    )));
-                }
+            // Check bounds
+            if !Self::within_lower_bound(lower_bound, user_key_buf) {
+                current_block.key_offset = entry_buf_ref.entry_end_pos as u64;
+                continue;
             }
+            if !Self::within_upper_bound(upper_bound, user_key_buf) {
+                current_block.key_offset = entry_buf_ref.entry_end_pos as u64;
+                break;
+            }
+
+            // Build the entry
+            let val = entry_buf_ref.value.to_vec();
+            let log_seq_num = entry_buf_ref.log_seq_num;
+            let entry_type = entry_buf_ref.entry_type;
+            current_block.key_offset = entry_buf_ref.entry_end_pos as u64;
+
+            // Pass a clone to rebuild_entry (entry may outlive iterator)
+            return Ok(Some(Self::rebuild_entry(
+                user_key_buf.clone(),
+                val,
+                log_seq_num,
+                entry_type,
+            )));
         }
 
         Ok(None)
