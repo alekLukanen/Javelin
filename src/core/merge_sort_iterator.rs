@@ -135,10 +135,6 @@ impl MergeSortIterator {
 
         // exit early if this is a single item get
         if self.upper_bound == self.lower_bound && primary_entry.is_some() {
-            self.db_context.log_debug(
-                "[MergeSortIterator] returning single item from memtable iters".to_string(),
-            );
-
             // free up resources
             self.memtable_iters = Vec::new();
             self.clear_sstable_iters();
@@ -146,9 +142,6 @@ impl MergeSortIterator {
             self.current_entry = primary_entry.clone();
             return Ok(primary_entry);
         }
-
-        self.db_context
-            .log_debug("[MergeSortIterator] memtables didn't contain the value".to_string());
 
         /////////////////////////////////////////////////
         // scan through the sstable levels
@@ -163,8 +156,6 @@ impl MergeSortIterator {
         sstable_levels.sort();
 
         for level_idx in &sstable_levels {
-            self.db_context
-                .log_debug(format!("[MergeSortIterator] checking level={}", level_idx));
             let Some(next_entry) = self.get_sstable_current_entry(level_idx)? else {
                 continue;
             };
@@ -281,11 +272,6 @@ impl MergeSortIterator {
             None => panic!("MergeSortIterator: requested level that doesn't exist"),
         };
 
-        self.db_context.log_debug(format!(
-            "[MergeSortIterator] checking if level={} is loaded | level_loaded={}",
-            level, level_loaded
-        ));
-
         if !level_loaded {
             self.load_sstable_iters(level)?;
         }
@@ -307,9 +293,6 @@ impl MergeSortIterator {
                         None => None,
                     },
                 };
-
-                self.db_context
-                    .log_debug(format!("[MergeSortIterator] entry: {:?}", entry));
 
                 match entry {
                     Some(entry) => {
@@ -395,11 +378,6 @@ impl MergeSortIterator {
     }
 
     fn load_sstable_iters(&mut self, level: &usize) -> Result<(), MergeSortIteratorError> {
-        self.db_context.log_debug(format!(
-            "[MergeSortIterator] loading sstables for level={}",
-            level
-        ));
-
         // TODO: get a list of all level-0 sstables that might contain the key
         let sstables = &self
             .read_state
@@ -426,12 +404,6 @@ impl MergeSortIterator {
                 );
                 iters.push(Box::new(iter));
             }
-
-            self.db_context.log_debug(format!(
-                "[MergeSortIterator] loaded {} sstables for level={}",
-                iters.len(),
-                level
-            ));
 
             let level_ref = self
                 .sstable_level_iters

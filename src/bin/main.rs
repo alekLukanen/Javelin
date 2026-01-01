@@ -26,7 +26,7 @@ fn large_db_test() -> Result<(), Box<dyn Error>> {
 
     let config = DBConfigBuilder::new()
         .sstable_max_block_size(4_096)
-        .memory_manager_max_memtable_memory_usage(50_000)
+        .memory_manager_max_memtable_memory_usage(100_000)
         .data_dir(temp_dir.dir())
         .logging_enabled(true)
         .debug_logging_eanbled(false)
@@ -38,7 +38,7 @@ fn large_db_test() -> Result<(), Box<dyn Error>> {
     println!("inserting records");
 
     let sample_config = SampleMemtableBuilder::IncreasingPuts {
-        size: 15_000,
+        size: 27_000,
         starting_value: 0,
         starting_log_sequence_num: 0,
     };
