@@ -90,11 +90,6 @@ impl From<BufUtilsError> for FileBlockIteratorError {
     }
 }
 
-struct CurrentUserKey {
-    start_pos: u64,
-    len: u64,
-}
-
 struct CurrentBlock {
     idx: u32,
     data: DataBlockHandle,
@@ -104,13 +99,8 @@ struct CurrentBlock {
 }
 
 impl CurrentBlock {
-    fn key_cursor(&self) -> Cursor<&[u8]> {
-        let mut cursor = Cursor::new(&self.data.data_block_ref()[8..]);
-        cursor.set_position(self.key_offset);
-        cursor
-    }
-    fn key_data(&self) -> Option<&[u8]> {
-        Some(&self.data.data_block_ref()[8..])
+    fn key_data(&self) -> &[u8] {
+        &self.data.data_block_ref()[8..]
     }
 }
 
@@ -189,18 +179,15 @@ impl FileBlockIterator {
                         ));
                     };
 
-                    let (mut entry_cursor, mut restart_cursor) =
+                    let (entry_cursor, mut restart_cursor) =
                         buf_utils::entry_and_restart_cursors(&index_block)?;
+                    let key_data = *entry_cursor.get_ref();
 
                     let mut left: u64 = 0;
                     let mut right: u64 = (restart_cursor.get_ref().len() as u64) / 4 - 1;
 
-                    if right > 500_000 {
-                        self.db_context.log_info(format!("right={}", right));
-                    }
-
                     // binary search the keys in the indexes to find the first block
-                    let mut lowest_restart_idx = right * 4;
+                    let mut lowest_restart_idx = right;
                     while left <= right {
                         let middle = left + (right - left) / 2;
                         let middle_offset = middle * 4;
@@ -209,11 +196,10 @@ impl FileBlockIterator {
                         let index_key_offset = buf_utils::read_u32(&mut restart_cursor)
                             .expect(format!("issue with index_key_offset | middle={} left={} right={} middle_offset={}", middle, left, right, middle_offset).as_str());
 
-                        entry_cursor.set_position(index_key_offset as u64);
-                        let index_key_entry = buf_utils::read_entry(&mut entry_cursor)
+                        let index_key_entry = buf_utils::read_entry_buf_ref(key_data, index_key_offset as usize)
                             .expect(format!("issue with index_key_entry | middle={} left={} right={} middle_offset={}", middle, left, right, middle_offset).as_str());
 
-                        let key = index_key_entry.user_key_suffix();
+                        let key = index_key_entry.key_suffix;
 
                         // compare the key and log_seq_num
                         match &lower_bound[..].cmp(key) {
@@ -299,9 +285,9 @@ impl FileBlockIterator {
         match (&self.lower_bound, &mut self.current_block) {
             (Some(lower_bound), Some(current_block)) => {
                 let data_block = current_block.data.data_block_ref();
+                let key_data = current_block.key_data();
 
-                let (mut entry_cursor, mut restart_cursor) =
-                    buf_utils::entry_and_restart_cursors(&data_block)?;
+                let (_, mut restart_cursor) = buf_utils::entry_and_restart_cursors(&data_block)?;
 
                 let mut left: u64 = 0;
                 let mut right: u64 = (restart_cursor.get_ref().len() as u64) / 4 - 1;
@@ -314,11 +300,10 @@ impl FileBlockIterator {
                     restart_cursor.set_position(middle_offset);
                     let entry_offset = buf_utils::read_u32(&mut restart_cursor)?;
 
-                    entry_cursor.set_position(entry_offset as u64);
-                    let key_entry = buf_utils::read_entry(&mut entry_cursor)?;
+                    let key_entry = buf_utils::read_entry_buf_ref(key_data, entry_offset as usize)?;
 
-                    let key = key_entry.user_key_suffix();
-                    let log_sequence_num = key_entry.log_seq_num();
+                    let key = key_entry.key_suffix;
+                    let log_sequence_num = key_entry.log_seq_num;
 
                     // compare the key and log_seq_num
                     match &lower_bound[..].cmp(key) {
@@ -375,7 +360,7 @@ impl FileBlockIterator {
         let upper_bound = &self.upper_bound;
 
         while current_block.key_offset < current_block.keys_len {
-            let key_data = current_block.key_data().unwrap();
+            let key_data = current_block.key_data();
             let entry_buf_ref =
                 buf_utils::read_entry_buf_ref(key_data, current_block.key_offset as usize)?;
 
@@ -442,6 +427,7 @@ impl FileBlockIterator {
             None => true,
         }
     }
+
     #[inline]
     fn rebuild_entry(
         user_key: Vec<u8>,

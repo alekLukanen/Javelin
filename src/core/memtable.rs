@@ -111,6 +111,13 @@ impl MemtableIterator {
             current_item: None,
         }
     }
+    pub fn new_from_lower_bound(memtable: Arc<Memtable>, lower_bound: &[u8]) -> MemtableIterator {
+        MemtableIterator {
+            memtable: memtable.clone(),
+            skip_list_iter: memtable.skip_list.iter_from(lower_bound),
+            current_item: None,
+        }
+    }
 }
 
 impl SourceIterator for MemtableIterator {
@@ -228,6 +235,16 @@ impl ImmutableMemtableIterator {
         ImmutableMemtableIterator {
             memtable: memtable.clone(),
             skip_list_iter: memtable.skip_list_iter(),
+            current_item: None,
+        }
+    }
+    pub fn new_from_lower_bound(
+        memtable: Arc<ImmutableMemtable>,
+        lower_bound: &[u8],
+    ) -> ImmutableMemtableIterator {
+        ImmutableMemtableIterator {
+            memtable: memtable.clone(),
+            skip_list_iter: memtable.skip_list.iter_from(lower_bound),
             current_item: None,
         }
     }

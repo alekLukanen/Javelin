@@ -70,13 +70,25 @@ impl MergeSortIterator {
         lower_bound: Option<Vec<u8>>,
         upper_bound: Option<Vec<u8>>,
     ) -> MergeSortIterator {
-        let active_memtable_iter =
-            Box::new(MemtableIterator::new(active_memtable.clone())) as Box<dyn SourceIterator>;
+        let active_memtable_iter = match &lower_bound {
+            Some(lower_bound) => Box::new(MemtableIterator::new_from_lower_bound(
+                active_memtable.clone(),
+                lower_bound,
+            )) as Box<dyn SourceIterator>,
+            None => {
+                Box::new(MemtableIterator::new(active_memtable.clone())) as Box<dyn SourceIterator>
+            }
+        };
         let immutable_memtable_iters = read_state
             .memtables
             .iter()
-            .map(|item| {
-                Box::new(ImmutableMemtableIterator::new(item.clone())) as Box<dyn SourceIterator>
+            .map(|item| match &lower_bound {
+                Some(lower_bound) => Box::new(ImmutableMemtableIterator::new_from_lower_bound(
+                    item.clone(),
+                    lower_bound,
+                )) as Box<dyn SourceIterator>,
+                None => Box::new(ImmutableMemtableIterator::new(item.clone()))
+                    as Box<dyn SourceIterator>,
             })
             .collect::<Vec<Box<dyn SourceIterator>>>();
 
@@ -127,12 +139,6 @@ impl MergeSortIterator {
             }
         }
 
-        // delete all iterators that are no longer needing to be used
-        // this will free up memory if the memtables have been flushed
-        for idx in memtable_iters_to_delete.iter().rev() {
-            self.memtable_iters.remove(*idx);
-        }
-
         // exit early if this is a single item get
         if self.upper_bound == self.lower_bound && primary_entry.is_some() {
             // free up resources
@@ -141,6 +147,12 @@ impl MergeSortIterator {
 
             self.current_entry = primary_entry.clone();
             return Ok(primary_entry);
+        }
+
+        // delete all iterators that are no longer needing to be used
+        // this will free up memory if the memtables have been flushed
+        for idx in memtable_iters_to_delete.iter().rev() {
+            self.memtable_iters.remove(*idx);
         }
 
         /////////////////////////////////////////////////
@@ -201,6 +213,12 @@ impl MergeSortIterator {
                             Ordering::Equal => {}
                             Ordering::Less => {
                                 iter.next()?;
+                                println!(
+                                    "lower_bound={:?} key={:?}",
+                                    lower_bound,
+                                    entry.entry.key_ref()
+                                );
+                                panic!();
                                 continue;
                             }
                             Ordering::Greater => {}
@@ -214,8 +232,9 @@ impl MergeSortIterator {
                             Ordering::Equal => {}
                             Ordering::Less => {}
                             Ordering::Greater => {
-                                iter.next()?;
-                                continue;
+                                // the iterator doesn't need to continue searching past the
+                                // end of the bounds
+                                break;
                             }
                         },
                         None => {}

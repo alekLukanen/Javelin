@@ -211,6 +211,66 @@ impl SkipList {
 
         SkipListIter { current: first }
     }
+
+    pub fn iter_from(&self, lower_bound: &[u8]) -> SkipListIter {
+        let mut current = self.head.clone();
+
+        for level in (1..self.num_levels).rev() {
+            loop {
+                let next = {
+                    let cur = current.read().unwrap();
+                    if level < cur.levels.len() {
+                        cur.levels[level].clone()
+                    } else {
+                        None
+                    }
+                };
+
+                let Some(next_arc) = next else { break };
+
+                // limit borrow scope
+                let cmp = {
+                    let next_ref = next_arc.read().unwrap();
+                    Self::user_key(&next_ref.log_entry.entry).cmp(lower_bound)
+                };
+
+                match cmp {
+                    Ordering::Less => {
+                        current = next_arc;
+                    }
+                    _ => break,
+                }
+            }
+        }
+
+        loop {
+            let next = {
+                let cur = current.read().unwrap();
+                cur.levels[0].clone()
+            };
+
+            let Some(next_arc) = next else {
+                return SkipListIter { current: None };
+            };
+
+            // limit borrow scope
+            let cmp = {
+                let next_ref = next_arc.read().unwrap();
+                Self::user_key(&next_ref.log_entry.entry).cmp(lower_bound)
+            };
+
+            match cmp {
+                Ordering::Less => {
+                    current = next_arc;
+                }
+                Ordering::Equal | Ordering::Greater => {
+                    return SkipListIter {
+                        current: Some(next_arc),
+                    };
+                }
+            }
+        }
+    }
 }
 
 impl Display for SkipList {
