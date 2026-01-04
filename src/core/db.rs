@@ -220,6 +220,34 @@ impl DB {
             )))?;
         Ok(())
     }
+
+    pub fn iterate(
+        &self,
+        lower_bound: Option<Vec<u8>>,
+        upper_bound: Option<Vec<u8>>,
+    ) -> Result<MergeSortIterator, DBError> {
+        let log_seq_num = self.db_backend.wal.incr_log_sequence_num();
+
+        let inner_guard = self.db_backend.db_inner.lock()?;
+
+        let active_memtable = inner_guard.active_memtable.clone();
+        let read_state = inner_guard.get_read_state();
+        let block_cache = inner_guard.block_cache.clone();
+
+        drop(inner_guard);
+
+        let iter = MergeSortIterator::new(
+            self.db_context.clone(),
+            active_memtable,
+            read_state,
+            block_cache,
+            log_seq_num,
+            lower_bound,
+            upper_bound,
+        );
+
+        Ok(iter)
+    }
 }
 
 //////////////////////////////////////////

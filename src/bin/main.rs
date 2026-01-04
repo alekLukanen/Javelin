@@ -4,6 +4,7 @@ use Javelin::core::{
     db::{self, DB},
     db_config::{self, DBConfigBuilder},
     entry::{Entry, LogEntry},
+    iterator::SourceIterator,
     skiplist::SkipList,
 };
 
@@ -16,7 +17,92 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // try_data_formatting();
 
-    large_db_test()?;
+    // large_db_test()?;
+
+    large_db_iterator_test()?;
+
+    Ok(())
+}
+
+fn large_db_iterator_test() -> Result<(), Box<dyn Error>> {
+    let temp_dir = TestContext::temp_dir()?;
+
+    let config = DBConfigBuilder::new()
+        .sstable_max_block_size(4_096)
+        .memory_manager_max_memtable_memory_usage(500_000)
+        .sstable_restart_interval(4)
+        .data_dir(temp_dir.dir())
+        .logging_enabled(true)
+        .debug_logging_eanbled(false)
+        .build();
+
+    let tc = TestContext::new_from_config(config.clone());
+    let dbase = DB::new(config.clone());
+
+    println!("inserting records");
+
+    let sample_config = SampleMemtableBuilder::IncreasingPuts {
+        size: 1_000_000,
+        starting_value: 0,
+        starting_log_sequence_num: 0,
+    };
+    let mut sample_entries = sample_config.build_log_entries(&tc)?;
+
+    for entry in &sample_entries.entries {
+        dbase.set(entry.entry.key(), entry.entry.value())?;
+    }
+
+    println!("finished inserting records");
+    println!("wait for sstable to be written to disk...");
+    thread::sleep(time::Duration::from_millis(250));
+
+    for entry in fs::read_dir(config.data_dir())? {
+        let entry = entry?;
+        println!("data dir entry: {:?}", entry.file_name());
+    }
+
+    // create the iterator
+
+    let mut iter = dbase.iterate(None, None)?;
+
+    let validation_start = std::time::Instant::now();
+
+    // validate the entries can be retrieved
+    let mut latency_sum = 0;
+    let mut latency_samples = 0;
+    let mut last_entry_log_seq_num = 0;
+    loop {
+        let get_start = std::time::Instant::now();
+
+        let Some(entry) = iter.next()? else {
+            println!("iterator is done");
+            break;
+        };
+
+        latency_sum += get_start.elapsed().as_micros();
+        latency_samples += 1;
+
+        last_entry_log_seq_num = entry.entry.key_ref()[0];
+
+        // sample_entries.assert_contains_entry(entry);
+    }
+
+    let validation_duration = validation_start.elapsed().as_secs();
+
+    // sample_entries.assert_all_entries_found();
+
+    println!(
+        "[METRIC] average get latency: {} micro seconds with {} samples and {} total latency",
+        latency_sum / latency_samples,
+        latency_samples,
+        latency_sum,
+    );
+    println!("[METRIC] iteration took {} seconds", validation_duration);
+
+    println!("{}", last_entry_log_seq_num);
+
+    println!("closing the db");
+    dbase.close()?;
 
     Ok(())
 }

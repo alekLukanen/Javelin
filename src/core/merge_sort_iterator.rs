@@ -140,7 +140,11 @@ impl MergeSortIterator {
         }
 
         // exit early if this is a single item get
-        if self.upper_bound == self.lower_bound && primary_entry.is_some() {
+        if self.upper_bound.is_some()
+            && self.lower_bound.is_some()
+            && self.upper_bound == self.lower_bound
+            && primary_entry.is_some()
+        {
             // free up resources
             self.memtable_iters = Vec::new();
             self.clear_sstable_iters();
@@ -213,12 +217,6 @@ impl MergeSortIterator {
                             Ordering::Equal => {}
                             Ordering::Less => {
                                 iter.next()?;
-                                println!(
-                                    "lower_bound={:?} key={:?}",
-                                    lower_bound,
-                                    entry.entry.key_ref()
-                                );
-                                panic!();
                                 continue;
                             }
                             Ordering::Greater => {}

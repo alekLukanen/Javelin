@@ -93,7 +93,7 @@ impl SampleMemtableBuilder {
         let table = Arc::new(Memtable::new(
             tc.db_context.clone(),
             tc.memory_manager.clone(),
-            10_000_000,
+            100_000_000,
         ));
 
         match self {

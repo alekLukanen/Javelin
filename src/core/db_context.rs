@@ -39,7 +39,7 @@ impl DBContext {
     }
 
     pub fn log_error(&self, msg: String) {
-        if !self.config().debug_logging_enabled() || !self.config().logging_enabled() {
+        if !self.config().logging_enabled() {
             return;
         }
 
