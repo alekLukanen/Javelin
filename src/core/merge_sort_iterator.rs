@@ -126,37 +126,10 @@ impl MergeSortIterator {
 
         /////////////////////////////////////////////////
         // scan through the memtables
-        // the memtables are sorted from newest (active) to oldest
-        // so if the entry is found then we can break out of the loop here
-        let mut memtable_iters_to_delete: Vec<usize> = Vec::with_capacity(2);
-        for idx in 0..self.memtable_iters.len() {
-            // get the iterators current/next entry
-            let (next_entry, iter_done) = self.find_next_valid_memtable_entry(&idx)?;
-            if iter_done {
-                memtable_iters_to_delete.push(idx);
-            }
-            self.db_context.log_info(format!(
-                "[idx={};cap={}] next_entry={:?}, iter_done={}",
-                idx,
-                self.memtable_iters.len(),
-                primary_entry,
-                iter_done,
-            ));
-            if let Some(_) = next_entry {
-                primary_entry = next_entry;
-                self.db_context.log_info(format!(
-                    "[idx={};cap={}] next_entry: {:?}",
-                    idx,
-                    self.memtable_iters.len(),
-                    primary_entry
-                ));
-                break;
-            }
+        let next_entry = self.find_next_valid_memtable_entry()?;
+        if next_entry.is_some() {
+            primary_entry = next_entry;
         }
-        self.db_context.log_info(format!(
-            "memtables to delete = {}",
-            memtable_iters_to_delete.len()
-        ));
 
         // exit early if this is a single item get
         if self.upper_bound.is_some()
@@ -170,12 +143,6 @@ impl MergeSortIterator {
 
             self.current_entry = primary_entry.clone();
             return Ok(primary_entry);
-        }
-
-        // delete all iterators that are no longer needing to be used
-        // this will free up memory if the memtables have been flushed
-        for idx in memtable_iters_to_delete.iter().rev() {
-            self.memtable_iters.remove(*idx);
         }
 
         /////////////////////////////////////////////////
@@ -204,100 +171,101 @@ impl MergeSortIterator {
 
     fn find_next_valid_memtable_entry(
         &mut self,
-        idx: &usize,
-    ) -> Result<(Option<Arc<LogEntry>>, bool), MergeSortIteratorError> {
-        let iter = self
-            .memtable_iters
-            .get_mut(*idx)
-            .expect("MergeSortIterator: expected memtable");
-
+    ) -> Result<Option<Arc<LogEntry>>, MergeSortIteratorError> {
         let mut primary_entry: Option<Arc<LogEntry>> = None;
-        let mut iter_done = false;
+        let mut iterators_done: Vec<usize> = Vec::new();
 
-        loop {
-            let entry = match iter.current() {
-                Some(entry) => Some(entry),
-                None => match iter.next()? {
+        for (idx, iter) in self.memtable_iters.iter_mut().enumerate() {
+            loop {
+                let entry = match iter.current() {
                     Some(entry) => Some(entry),
-                    None => None,
-                },
-            };
-            self.db_context.log_info(format!("entry={:?}", entry));
-            match entry {
-                Some(entry) => {
-                    // is the entry from a newer log sequence
-                    if entry.log_seq_num > self.log_sequence_num {
-                        iter.next()?;
-                        continue;
-                    }
+                    None => match iter.next()? {
+                        Some(entry) => Some(entry),
+                        None => None,
+                    },
+                };
 
-                    // ignore entries that come before the lower bound
-                    match &self.lower_bound {
-                        Some(lower_bound) => match entry.entry.key_ref().cmp(lower_bound) {
-                            Ordering::Equal => {}
-                            Ordering::Less => {
-                                iter.next()?;
-                                continue;
-                            }
-                            Ordering::Greater => {}
-                        },
-                        None => {}
-                    }
+                match entry {
+                    Some(entry) => {
+                        // is the entry from a newer log sequence
+                        if entry.log_seq_num > self.log_sequence_num {
+                            iter.next()?;
+                            continue;
+                        }
 
-                    // ignore entries that come after the upper bound
-                    match &self.upper_bound {
-                        Some(upper_bound) => match entry.entry.key_ref().cmp(upper_bound) {
-                            Ordering::Equal => {}
-                            Ordering::Less => {}
-                            Ordering::Greater => {
-                                // the iterator doesn't need to continue searching past the
-                                // end of the bounds
-                                break;
-                            }
-                        },
-                        None => {}
-                    }
-
-                    // ignore any entries that exist for the same key
-                    match &self.current_entry {
-                        Some(current_entry) => {
-                            match entry.entry.key_ref().cmp(current_entry.entry.key_ref()) {
-                                Ordering::Equal => {
+                        // ignore entries that come before the lower bound
+                        match &self.lower_bound {
+                            Some(lower_bound) => match entry.entry.key_ref().cmp(lower_bound) {
+                                Ordering::Equal => {}
+                                Ordering::Less => {
                                     iter.next()?;
                                     continue;
                                 }
-                                Ordering::Less => {
-                                    panic!(
-                                        "new entry is less than current entry; this should never happen"
-                                    );
-                                }
                                 Ordering::Greater => {}
-                            }
+                            },
+                            None => {}
                         }
-                        None => {}
-                    }
 
-                    // set the primary entry if the new entry is less than the
-                    // current primary entry value
-                    match &primary_entry {
-                        Some(primary_entry_val) => {
-                            if *primary_entry_val > entry {
-                                primary_entry = Some(entry)
+                        // ignore entries that come after the upper bound
+                        match &self.upper_bound {
+                            Some(upper_bound) => match entry.entry.key_ref().cmp(upper_bound) {
+                                Ordering::Equal => {}
+                                Ordering::Less => {}
+                                Ordering::Greater => {
+                                    iter.next()?;
+                                    continue;
+                                }
+                            },
+                            None => {}
+                        }
+
+                        // ignore any entries that exist for the same key
+                        match &self.current_entry {
+                            Some(current_entry) => {
+                                match entry.entry.key_ref().cmp(current_entry.entry.key_ref()) {
+                                    Ordering::Equal => {
+                                        iter.next()?;
+                                        continue;
+                                    }
+                                    Ordering::Less => {
+                                        panic!(
+                                            "new entry is less than current entry; this should never happen"
+                                        );
+                                    }
+                                    Ordering::Greater => {}
+                                }
+                            }
+                            None => {}
+                        }
+
+                        // set the primary entry if the new entry is less than the
+                        // current primary entry value
+                        match &primary_entry {
+                            Some(primary_entry_val) => {
+                                if *primary_entry_val > entry {
+                                    primary_entry = Some(entry)
+                                }
+                            }
+                            None => {
+                                primary_entry = Some(entry);
                             }
                         }
-                        None => {
-                            primary_entry = Some(entry);
-                        }
+                        break;
                     }
-                    break;
-                }
-                None => {
-                    iter_done = true;
-                    break;
+                    None => {
+                        iterators_done.push(idx);
+                        break;
+                    }
                 }
             }
         }
-        Ok((primary_entry, iter_done))
+
+        // remove the iterators that were completed
+        for idx in iterators_done.iter().rev() {
+            self.memtable_iters.remove(*idx);
+        }
+
+        Ok(primary_entry)
     }
 
     fn get_sstable_current_entry(

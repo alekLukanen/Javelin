@@ -124,6 +124,7 @@ impl SampleMemtableBuilder {
                 let mut log_seq_num = *starting_log_sequence_num + size;
                 for i in (*starting_value..(*starting_value + *size) as u64).rev() {
                     let key = i.to_be_bytes().to_vec();
+                    log_seq_num -= 1;
                     let inserted = table.insert(Arc::new(LogEntry::new(
                         Entry::Put {
                             key: key.clone(),
@@ -131,7 +132,6 @@ impl SampleMemtableBuilder {
                         },
                         log_seq_num,
                     )))?;
-                    log_seq_num -= 1;
                     assert!(inserted);
                 }
             }
