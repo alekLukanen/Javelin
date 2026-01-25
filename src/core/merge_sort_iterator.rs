@@ -126,6 +126,8 @@ impl MergeSortIterator {
 
         /////////////////////////////////////////////////
         // scan through the memtables
+        // the memtables are sorted from newest (active) to oldest
+        // so if the entry is found then we can break out of the loop here
         let mut memtable_iters_to_delete: Vec<usize> = Vec::with_capacity(2);
         for idx in 0..self.memtable_iters.len() {
             // get the iterators current/next entry
@@ -133,11 +135,28 @@ impl MergeSortIterator {
             if iter_done {
                 memtable_iters_to_delete.push(idx);
             }
+            self.db_context.log_info(format!(
+                "[idx={};cap={}] next_entry={:?}, iter_done={}",
+                idx,
+                self.memtable_iters.len(),
+                primary_entry,
+                iter_done,
+            ));
             if let Some(_) = next_entry {
                 primary_entry = next_entry;
+                self.db_context.log_info(format!(
+                    "[idx={};cap={}] next_entry: {:?}",
+                    idx,
+                    self.memtable_iters.len(),
+                    primary_entry
+                ));
                 break;
             }
         }
+        self.db_context.log_info(format!(
+            "memtables to delete = {}",
+            memtable_iters_to_delete.len()
+        ));
 
         // exit early if this is a single item get
         if self.upper_bound.is_some()
@@ -203,6 +222,7 @@ impl MergeSortIterator {
                     None => None,
                 },
             };
+            self.db_context.log_info(format!("entry={:?}", entry));
             match entry {
                 Some(entry) => {
                     // is the entry from a newer log sequence

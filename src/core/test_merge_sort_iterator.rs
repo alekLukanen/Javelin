@@ -7,20 +7,20 @@ use crate::core::{
     entry::{Entry, LogEntry},
     iterator::SourceIterator,
     manifest::SSTableVersion,
-    memtable::ImmutableMemtable,
+    memtable::{ImmutableMemtable, MemtableIterator},
     merge_sort_iterator::MergeSortIterator,
     test_utils::{SampleMemtableBuilder, TestContext},
 };
 
 #[test]
 fn test_simple_case_memtables_only() -> Result<(), Box<dyn Error>> {
-    let config = DBConfigBuilder::new().build();
+    let config = DBConfigBuilder::new().logging_enabled(true).build();
     let tc = TestContext::new_from_config(config);
 
     let active_memtable = SampleMemtableBuilder::IncreasingPuts {
-        size: 10,
-        starting_value: 0,
-        starting_log_sequence_num: 0,
+        size: 5,
+        starting_value: 5,
+        starting_log_sequence_num: 100,
     }
     .build(&tc)?;
     let immuitable_memtable = Arc::new(ImmutableMemtable::new(
@@ -28,8 +28,8 @@ fn test_simple_case_memtables_only() -> Result<(), Box<dyn Error>> {
         tc.db_context.clone(),
         SampleMemtableBuilder::IncreasingPuts {
             size: 10,
-            starting_value: 5,
-            starting_log_sequence_num: 100,
+            starting_value: 0,
+            starting_log_sequence_num: 0,
         }
         .build(&tc)?,
     )?);
@@ -74,7 +74,7 @@ fn test_simple_case_memtables_only() -> Result<(), Box<dyn Error>> {
                 key: i.to_be_bytes().to_vec(),
                 val: i.to_be_bytes().to_vec(),
             },
-            105 + idx as u64,
+            100 + idx as u64,
         ));
     }
 

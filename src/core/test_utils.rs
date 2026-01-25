@@ -103,7 +103,7 @@ impl SampleMemtableBuilder {
                 starting_log_sequence_num,
             } => {
                 let mut log_seq_num = *starting_log_sequence_num;
-                for i in *starting_value..*size as u64 {
+                for i in *starting_value..(*starting_value + *size) as u64 {
                     let key = i.to_be_bytes().to_vec();
                     let inserted = table.insert(Arc::new(LogEntry::new(
                         Entry::Put {
@@ -122,7 +122,7 @@ impl SampleMemtableBuilder {
                 starting_log_sequence_num,
             } => {
                 let mut log_seq_num = *starting_log_sequence_num + size;
-                for i in (*starting_value..*size as u64).rev() {
+                for i in (*starting_value..(*starting_value + *size) as u64).rev() {
                     let key = i.to_be_bytes().to_vec();
                     let inserted = table.insert(Arc::new(LogEntry::new(
                         Entry::Put {
