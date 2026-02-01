@@ -171,6 +171,96 @@ fn test_simple_case_decreasing_puts_memtables_only() -> Result<(), Box<dyn Error
 }
 
 #[test]
+fn test_simple_case_memtables_only_filters_out_tuples_after_log_sequence_num()
+-> Result<(), Box<dyn Error>> {
+    let config = DBConfigBuilder::new().logging_enabled(true).build();
+    let tc = TestContext::new_from_config(config);
+
+    let active_memtable = SampleMemtableBuilder::IncreasingPuts {
+        size: 5,
+        starting_value: 5,
+        starting_log_sequence_num: 100,
+    }
+    .build(&tc)?;
+    let immuitable_memtable1 = Arc::new(ImmutableMemtable::new(
+        0,
+        tc.db_context.clone(),
+        SampleMemtableBuilder::IncreasingPuts {
+            size: 10,
+            starting_value: 0,
+            starting_log_sequence_num: 0,
+        }
+        .build(&tc)?,
+    )?);
+    let immuitable_memtable2 = Arc::new(ImmutableMemtable::new(
+        0,
+        tc.db_context.clone(),
+        SampleMemtableBuilder::IncreasingPuts {
+            size: 10,
+            starting_value: 10,
+            starting_log_sequence_num: 10,
+        }
+        .build(&tc)?,
+    )?);
+
+    let read_state = Arc::new(ReadState {
+        memtables: vec![immuitable_memtable1, immuitable_memtable2],
+        sstable_version: Arc::new(SSTableVersion {
+            sstable_levels: HashMap::new(),
+        }),
+    });
+
+    let block_cache = Arc::new(BlockCache::new(
+        tc.db_context.clone(),
+        tc.memory_manager.clone(),
+    ));
+
+    let log_sequence_num: u64 = 15;
+
+    let mut iter = MergeSortIterator::new(
+        tc.db_context.clone(),
+        active_memtable.clone(),
+        read_state.clone(),
+        block_cache.clone(),
+        log_sequence_num.clone(),
+        None,
+        None,
+    );
+
+    let mut expected_entries = Vec::new();
+    for i in 0..10u64 {
+        expected_entries.push(LogEntry::new(
+            Entry::Put {
+                key: i.to_be_bytes().to_vec(),
+                val: i.to_be_bytes().to_vec(),
+            },
+            i,
+        ));
+    }
+    for (idx, i) in (10..16u64).enumerate() {
+        expected_entries.push(LogEntry::new(
+            Entry::Put {
+                key: i.to_be_bytes().to_vec(),
+                val: i.to_be_bytes().to_vec(),
+            },
+            10 + idx as u64,
+        ));
+    }
+
+    let mut idx: usize = 0;
+    loop {
+        let Some(entry) = iter.next()? else {
+            break;
+        };
+        println!("[idx={}] entry: {:?}", idx, entry);
+        assert_eq!(*expected_entries.get(idx).unwrap(), *entry);
+        idx += 1;
+    }
+
+    Ok(())
+}
+
+#[test]
 fn test_simple_case_memtables_only_with_bounds() -> Result<(), Box<dyn Error>> {
     let config = DBConfigBuilder::new().build();
     let tc = TestContext::new_from_config(config);
