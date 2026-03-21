@@ -6,13 +6,16 @@ use super::{db::DB, db_config::DBConfigBuilder};
 
 #[test]
 fn test_simple_case_no_immutable_memtable_created() -> Result<(), Box<dyn Error>> {
+    let temp_dir = TestContext::temp_dir()?;
+
     let config = DBConfigBuilder::new()
         .sstable_max_block_size(100_000)
+        .data_dir(temp_dir.dir())
         .logging_enabled(true)
         .debug_logging_eanbled(true)
         .build();
 
-    let dbase = DB::new(config);
+    let dbase = DB::new(config)?;
 
     println!("inserting records");
 
@@ -51,7 +54,7 @@ fn test_simple_case_with_immutable_memtable_created() -> Result<(), Box<dyn Erro
         .build();
 
     let tc = TestContext::new_from_config(config.clone());
-    let dbase = DB::new(config.clone());
+    let dbase = DB::new(config.clone())?;
 
     println!("inserting records");
 
@@ -103,7 +106,7 @@ fn test_large_case_with_immutable_memtable_created() -> Result<(), Box<dyn Error
         .build();
 
     let tc = TestContext::new_from_config(config.clone());
-    let dbase = DB::new(config.clone());
+    let dbase = DB::new(config.clone())?;
 
     println!("inserting records");
 

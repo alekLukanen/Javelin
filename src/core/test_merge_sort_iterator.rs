@@ -36,9 +36,7 @@ fn test_simple_case_memtables_only() -> Result<(), Box<dyn Error>> {
 
     let read_state = Arc::new(ReadState {
         memtables: vec![immuitable_memtable],
-        sstable_version: Arc::new(SSTableVersion {
-            sstable_levels: HashMap::new(),
-        }),
+        sstable_version: Arc::new(SSTableVersion::default()),
     });
 
     let block_cache = Arc::new(BlockCache::new(
@@ -115,9 +113,7 @@ fn test_simple_case_decreasing_puts_memtables_only() -> Result<(), Box<dyn Error
 
     let read_state = Arc::new(ReadState {
         memtables: vec![immuitable_memtable],
-        sstable_version: Arc::new(SSTableVersion {
-            sstable_levels: HashMap::new(),
-        }),
+        sstable_version: Arc::new(SSTableVersion::default()),
     });
 
     let block_cache = Arc::new(BlockCache::new(
@@ -205,9 +201,7 @@ fn test_simple_case_memtables_only_filters_out_tuples_after_log_sequence_num()
 
     let read_state = Arc::new(ReadState {
         memtables: vec![immuitable_memtable1, immuitable_memtable2],
-        sstable_version: Arc::new(SSTableVersion {
-            sstable_levels: HashMap::new(),
-        }),
+        sstable_version: Arc::new(SSTableVersion::default()),
     });
 
     let block_cache = Arc::new(BlockCache::new(
@@ -284,9 +278,7 @@ fn test_simple_case_memtables_only_with_bounds() -> Result<(), Box<dyn Error>> {
 
     let read_state = Arc::new(ReadState {
         memtables: vec![immuitable_memtable],
-        sstable_version: Arc::new(SSTableVersion {
-            sstable_levels: HashMap::new(),
-        }),
+        sstable_version: Arc::new(SSTableVersion::default()),
     });
 
     let block_cache = Arc::new(BlockCache::new(
@@ -363,9 +355,7 @@ fn test_simple_case_memtables_only_with_equal_bounds() -> Result<(), Box<dyn Err
 
     let read_state = Arc::new(ReadState {
         memtables: vec![immuitable_memtable],
-        sstable_version: Arc::new(SSTableVersion {
-            sstable_levels: HashMap::new(),
-        }),
+        sstable_version: Arc::new(SSTableVersion::default()),
     });
 
     let block_cache = Arc::new(BlockCache::new(

@@ -37,7 +37,7 @@ fn large_db_iterator_test() -> Result<(), Box<dyn Error>> {
         .build();
 
     let tc = TestContext::new_from_config(config.clone());
-    let dbase = DB::new(config.clone());
+    let dbase = DB::new(config.clone())?;
 
     println!("inserting records");
 
@@ -120,7 +120,7 @@ fn large_db_test() -> Result<(), Box<dyn Error>> {
         .build();
 
     let tc = TestContext::new_from_config(config.clone());
-    let dbase = DB::new(config.clone());
+    let dbase = DB::new(config.clone())?;
 
     println!("inserting records");
 
@@ -191,7 +191,7 @@ fn try_data_formatting() {
 fn try_db() -> Result<(), Box<dyn std::error::Error>> {
     let db_config = db_config::DBConfigBuilder::new().build();
 
-    let db = db::DB::new(db_config);
+    let db = db::DB::new(db_config)?;
 
     // set 1
     db.set(vec![1u8], vec![1u8, 1u8])?;

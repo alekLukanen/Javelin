@@ -15,8 +15,8 @@ use super::wal::WAL;
 use crate::core::db_config::DBConfig;
 use crate::core::file_utils;
 use crate::core::iterator::{IteratorError, SourceIterator};
+use crate::core::manifest::ManifestError;
 use crate::core::merge_sort_iterator::MergeSortIterator;
-use crate::core::sstable_builder::{Block, DataBlock, FooterBlock};
 
 #[derive(Debug)]
 pub enum DBError {
@@ -26,6 +26,7 @@ pub enum DBError {
     BlockCacheError(BlockCacheError),
     MutexLockFailed(String),
     IteratorError(IteratorError),
+    ManifestError(ManifestError),
 }
 
 impl Display for DBError {
@@ -37,6 +38,7 @@ impl Display for DBError {
             DBError::BlockCacheError(e) => write!(f, "BlockCacheError: {}", e),
             DBError::MutexLockFailed(v) => write!(f, "MutexLockFailed: {}", v),
             DBError::IteratorError(e) => write!(f, "IteratorError: {}", e),
+            DBError::ManifestError(e) => write!(f, "ManifestError: {}", e),
         }
     }
 }
@@ -50,6 +52,7 @@ impl Error for DBError {
             DBError::BlockCacheError(e) => Some(e),
             DBError::MutexLockFailed(_) => None,
             DBError::IteratorError(e) => Some(e),
+            DBError::ManifestError(e) => Some(e),
         }
     }
 }
@@ -90,6 +93,12 @@ impl From<IteratorError> for DBError {
     }
 }
 
+impl From<ManifestError> for DBError {
+    fn from(value: ManifestError) -> Self {
+        DBError::ManifestError(value)
+    }
+}
+
 ////////////////////////////////////////////
 
 #[derive(Clone)]
@@ -116,12 +125,12 @@ pub struct DB {
 }
 
 impl DB {
-    pub fn new(config: DBConfig) -> DB {
+    pub fn new(config: DBConfig) -> Result<DB, DBError> {
         let db_context = Arc::new(DBContext::new(config));
         let memory = Arc::new(MemoryManager::new(db_context.clone()));
 
         let wal = WAL::new();
-        let manifest = Manifest::new(db_context.clone());
+        let manifest = Manifest::new(db_context.clone())?;
 
         let db_backend = Arc::new(DBBackend {
             db_inner: Mutex::new(DBInner {
@@ -138,7 +147,7 @@ impl DB {
                 }),
                 immutable_memtable_idx: atomic::AtomicUsize::new(0),
                 block_cache: Arc::new(BlockCache::new(db_context.clone(), memory.clone())),
-                manifest: Manifest::new(db_context.clone()),
+                manifest,
                 memory: memory.clone(),
                 db_context: db_context.clone(),
             }),
@@ -155,12 +164,12 @@ impl DB {
             }
         });
 
-        DB {
+        Ok(DB {
             db_backend,
             maintainer_handle: handle,
             memory,
             db_context,
-        }
+        })
     }
 
     pub fn close(&self) -> Result<(), DBError> {

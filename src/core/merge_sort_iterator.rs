@@ -98,9 +98,9 @@ impl MergeSortIterator {
 
         let mut sstable_level_iters =
             HashMap::with_capacity(read_state.sstable_version.sstable_levels.len());
-        for idx in read_state.sstable_version.sstable_levels.keys() {
+        for idx in read_state.sstable_version.levels() {
             sstable_level_iters.insert(
-                *idx,
+                idx,
                 SSTableIterRefs {
                     iters: Vec::new(),
                     loaded: false,
@@ -152,8 +152,9 @@ impl MergeSortIterator {
             .sstable_version
             .sstable_levels
             .iter()
+            .enumerate()
             .filter(|(_, item)| item.sstables.len() > 0)
-            .map(|(key, _)| key.clone())
+            .map(|(idx, _)| idx.clone())
             .collect::<Vec<_>>();
         sstable_levels.sort();
 
@@ -388,7 +389,7 @@ impl MergeSortIterator {
             .read_state
             .sstable_version
             .sstable_levels
-            .get(level)
+            .get(*level)
             .unwrap()
             .sstables;
 
