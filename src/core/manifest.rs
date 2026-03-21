@@ -121,6 +121,18 @@ pub struct SSTableLevel {
     pub(crate) sstables: BTreeMap<u64, ()>,
 }
 
+/**
+ * The manifest keeps track of the data pages on disk. Whenever
+ * a new file is added by flushing the change will be rocorded
+ * to the manifest as a change. When a compaction happens we
+ * remove files from one level and add them to an upper level.
+ * Each operation happens transactionally so the SSTableVersion
+ * reference is update in place with the new SSTableVersion.
+ * Current holders of the SSTableVersion don't see the change.
+ *
+ * In summary the manifest will record the "changes" that
+ * lead to SSTableVersion's current state.
+ */
 pub struct Manifest {
     file: File,
 
