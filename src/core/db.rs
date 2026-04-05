@@ -3,6 +3,7 @@ use std::error::Error;
 use std::fmt::Display;
 use std::fs;
 use std::sync::{Arc, Mutex, atomic};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
 use super::block_cache::{BlockCache, BlockCacheError};
@@ -129,10 +130,21 @@ impl ReadState {
 
 pub struct DB {
     db_backend: Arc<DBBackend>,
-    maintainer_handle: JoinHandle<()>,
+    maintainer_handle: Mutex<Option<JoinHandle<()>>>,
 
     memory: Arc<MemoryManager>,
     db_context: Arc<DBContext>,
+}
+
+impl Drop for DB {
+    fn drop(&mut self) {
+        self.db_backend.shutdown.store(true, Ordering::Relaxed);
+        if let Ok(mut guard) = self.maintainer_handle.lock() {
+            if let Some(handle) = guard.take() {
+                handle.join().ok();
+            }
+        }
+    }
 }
 
 impl DB {
@@ -210,6 +222,7 @@ impl DB {
 
         let sstable_version = manifest.sstable_version();
 
+        let shutdown = Arc::new(AtomicBool::new(false));
         let db_backend = Arc::new(DBBackend {
             db_inner: Mutex::new(DBInner {
                 active_memtable: Arc::new(Memtable::new(
@@ -234,6 +247,7 @@ impl DB {
             }),
             wal,
             db_context: db_context.clone(),
+            shutdown: shutdown.clone(),
         });
         let db_backend_ref = db_backend.clone();
         let handle = std::thread::spawn(move || {
@@ -247,7 +261,7 @@ impl DB {
 
         Ok(DB {
             db_backend,
-            maintainer_handle: handle,
+            maintainer_handle: Mutex::new(Some(handle)),
             memory,
             db_context,
         })
@@ -255,6 +269,12 @@ impl DB {
 
     pub fn close(&self) -> Result<(), DBError> {
         self.db_backend.db_inner.lock()?.block_cache.close();
+        self.db_backend.shutdown.store(true, Ordering::Relaxed);
+        if let Ok(mut guard) = self.maintainer_handle.lock() {
+            if let Some(handle) = guard.take() {
+                handle.join().ok();
+            }
+        }
         Ok(())
     }
 
@@ -366,6 +386,7 @@ pub(crate) struct DBBackend {
     pub(crate) db_inner: Mutex<DBInner>,
     pub(crate) wal: WAL,
     pub(crate) db_context: Arc<DBContext>,
+    pub(crate) shutdown: Arc<AtomicBool>,
 }
 
 impl DBBackend {
@@ -374,6 +395,10 @@ impl DBBackend {
     /// - Compacting SSTables when a layer gets too large
     fn maintainer(db_backend: Arc<DBBackend>) -> Result<(), DBError> {
         loop {
+            if db_backend.shutdown.load(Ordering::Relaxed) {
+                break Ok(());
+            }
+
             // check for immutable memtables to flush
             match Self::flush_immutable_memtable(&db_backend) {
                 Ok(_) => {}
