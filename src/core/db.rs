@@ -369,7 +369,9 @@ impl DBBackend {
         {
             read_state.memtables.remove(pos);
         } else {
-            panic!("REMOVE MEMTABLE ERROR: memtable no long found in memtables vec!");
+            panic!(
+                "REMOVE MEMTABLE ERROR: memtable no long found in memtables vec; this is impossible!"
+            );
         }
 
         guard.read_state = Arc::new(read_state);
