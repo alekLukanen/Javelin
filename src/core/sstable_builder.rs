@@ -3,7 +3,11 @@ use std::{io::Cursor, sync::Arc};
 use crate::core::buf_utils;
 
 use super::{
-    db_context::DBContext, entry::LogEntry, memtable::ImmutableMemtable, skiplist::SkipListIter,
+    db_context::DBContext,
+    entry::LogEntry,
+    iterator::{IteratorError, SourceIterator},
+    memtable::ImmutableMemtable,
+    skiplist::SkipListIter,
 };
 
 pub enum Compression {
@@ -127,8 +131,16 @@ pub struct SSTableBuilder {
     meta_data: MetaDataBlock,
 
     immutable_memtable: Option<SkipListIter>,
+    /// Source for compaction: a `SourceIterator` over merged entries.
+    compaction_source: Option<Box<dyn SourceIterator>>,
+    /// When true, `Del` tombstone entries are dropped (bottom-level compaction).
+    pub(crate) skip_deletes: bool,
+
     restart_segment_size: usize,
     max_block_size: usize,
+
+    first_seen_key: Option<Vec<u8>>,
+    last_seen_key: Option<Vec<u8>>,
 }
 
 impl SSTableBuilder {
@@ -141,9 +153,40 @@ impl SSTableBuilder {
             returned_index_block: false,
             meta_data: MetaDataBlock { num_blocks: 0 },
             immutable_memtable: Some(memtable.skip_list_iter()),
+            compaction_source: None,
+            skip_deletes: false,
             restart_segment_size: db_context.config().sstable_restart_interval(),
             max_block_size: db_context.config().sstable_max_block_size(),
+            first_seen_key: None,
+            last_seen_key: None,
         }
+    }
+
+    pub fn build_from_source_iterator(
+        db_context: Arc<DBContext>,
+        source: Box<dyn SourceIterator>,
+        skip_deletes: bool,
+    ) -> SSTableBuilder {
+        SSTableBuilder {
+            db_context: db_context.clone(),
+            returned_index_block: false,
+            meta_data: MetaDataBlock { num_blocks: 0 },
+            immutable_memtable: None,
+            compaction_source: Some(source),
+            skip_deletes,
+            restart_segment_size: db_context.config().sstable_restart_interval(),
+            max_block_size: db_context.config().sstable_max_block_size(),
+            first_seen_key: None,
+            last_seen_key: None,
+        }
+    }
+
+    pub(crate) fn first_seen_key(&self) -> Option<&Vec<u8>> {
+        self.first_seen_key.as_ref()
+    }
+
+    pub(crate) fn last_seen_key(&self) -> Option<&Vec<u8>> {
+        self.last_seen_key.as_ref()
     }
 
     fn next_memtable_block(&mut self) -> Option<Block> {
@@ -163,6 +206,12 @@ impl SSTableBuilder {
         let mut block_size = 0;
 
         for entry in iter {
+            let entry_key = entry.entry.key();
+            if self.first_seen_key.is_none() {
+                self.first_seen_key = Some(entry_key.clone());
+            }
+            self.last_seen_key = Some(entry_key.clone());
+
             if restart_idx % self.restart_segment_size as u32 == 0 {
                 if smallest_entry.is_none() {
                     smallest_entry = Some(entry.clone());
@@ -173,7 +222,7 @@ impl SSTableBuilder {
                 restart_offsets.push(restart_offset);
                 restart_offset += next_compressed_entry.size() as u32;
                 block_size += next_compressed_entry.size();
-                prev_key = Some(entry.entry.key());
+                prev_key = Some(entry_key);
                 compressed_entries.push(next_compressed_entry);
             } else {
                 // get the previous key
@@ -187,7 +236,7 @@ impl SSTableBuilder {
                 // update state
                 restart_offset += next_compressed_entry.size() as u32;
                 block_size += next_compressed_entry.size();
-                prev_key = Some(entry.entry.key());
+                prev_key = Some(entry_key);
                 compressed_entries.push(next_compressed_entry);
             }
 
@@ -207,6 +256,78 @@ impl SSTableBuilder {
             self.meta_data.num_blocks += 1;
 
             Some(data_block)
+        } else {
+            None
+        }
+    }
+
+    /// Build the next data block from the compaction source iterator.
+    /// Mirrors `next_memtable_block` but reads from `compaction_source`.
+    fn next_compaction_block(&mut self) -> Option<Block> {
+        use super::entry::Entry;
+
+        let source = match &mut self.compaction_source {
+            Some(s) => s,
+            None => return None,
+        };
+
+        let mut compressed_entries: Vec<PrefixCompressedEntry> = Vec::new();
+        let mut restart_offsets: Vec<u32> = Vec::new();
+        let mut restart_offset = 0;
+        let mut restart_idx: u32 = 0;
+
+        let mut prev_key: Option<Vec<u8>> = None;
+        let mut block_size = 0;
+
+        loop {
+            let entry = match source.next() {
+                Ok(Some(e)) => e,
+                Ok(None) => break,
+                Err(_) => break,
+            };
+
+            // Skip tombstones at the bottom level during compaction
+            if self.skip_deletes {
+                if let Entry::Del { .. } = &entry.entry {
+                    continue;
+                }
+            }
+
+            let entry_key = entry.entry.key();
+            if self.first_seen_key.is_none() {
+                self.first_seen_key = Some(entry_key.clone());
+            }
+            self.last_seen_key = Some(entry_key.clone());
+
+            let next_compressed_entry = if restart_idx % self.restart_segment_size as u32 == 0 {
+                let ce = Self::compressed_entry_from_log_entry(&entry, &[]);
+                restart_offsets.push(restart_offset);
+                restart_offset += ce.size() as u32;
+                block_size += ce.size();
+                prev_key = Some(entry_key);
+                ce
+            } else {
+                let current_prev_key = prev_key.as_deref().unwrap_or(&[]);
+                let ce = Self::compressed_entry_from_log_entry(&entry, current_prev_key);
+                restart_offset += ce.size() as u32;
+                block_size += ce.size();
+                prev_key = Some(entry_key);
+                ce
+            };
+            compressed_entries.push(next_compressed_entry);
+            restart_idx += 1;
+
+            if block_size > self.max_block_size {
+                break;
+            }
+        }
+
+        if block_size != 0 {
+            self.meta_data.num_blocks += 1;
+            Some(Block::DataBlock(DataBlock {
+                keys: compressed_entries,
+                restarts: restart_offsets,
+            }))
         } else {
             None
         }
@@ -362,6 +483,8 @@ impl Iterator for SSTableBuilder {
     fn next(&mut self) -> Option<Self::Item> {
         if self.immutable_memtable.is_some() {
             self.next_memtable_block()
+        } else if self.compaction_source.is_some() {
+            self.next_compaction_block()
         } else {
             None
         }

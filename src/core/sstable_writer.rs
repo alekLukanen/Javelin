@@ -72,6 +72,8 @@ pub struct SSTableWriter {
     meta_size: usize,
     index_block_entries: Vec<(Vec<u8>, usize)>,
     write_stage: WriteStage,
+
+    total_bytes_written: u64,
 }
 
 impl SSTableWriter {
@@ -90,6 +92,7 @@ impl SSTableWriter {
             meta_size: 0,
             index_block_entries: Vec::new(),
             write_stage: WriteStage::DataBlock,
+            total_bytes_written: 0,
         })
     }
 
@@ -145,6 +148,18 @@ impl SSTableWriter {
         }
     }
 
+    pub fn total_bytes_written(&self) -> u64 {
+        self.total_bytes_written
+    }
+
+    pub fn first_key(&self) -> Option<Vec<u8>> {
+        self.builder.first_seen_key().cloned()
+    }
+
+    pub fn last_key(&self) -> Option<Vec<u8>> {
+        self.builder.last_seen_key().cloned()
+    }
+
     fn write_block(&mut self, block: &Block) -> Result<Vec<u8>, SSTableWriterError> {
         match block {
             Block::DataBlock(data_block) => {
@@ -155,6 +170,7 @@ impl SSTableWriter {
                 let data =
                     self.write_data_or_index_block(&data_block.keys, &data_block.restarts)?;
                 self.data_size += data.len();
+                self.total_bytes_written += data.len() as u64;
                 self.index_block_entries.push((
                     data_block
                         .keys
@@ -172,6 +188,7 @@ impl SSTableWriter {
                 let data =
                     self.write_data_or_index_block(&index_block.keys, &index_block.restarts)?;
                 self.index_size = data.len();
+                self.total_bytes_written += data.len() as u64;
                 Ok(data)
             }
             Block::MetaDataBlock(meta_data_block) => {
@@ -179,12 +196,14 @@ impl SSTableWriter {
                     .log_debug("[SSTableWriter] writing meta data block".to_string());
                 let data = self.write_meta_data_block(meta_data_block)?;
                 self.meta_size = data.len();
+                self.total_bytes_written += data.len() as u64;
                 Ok(data)
             }
             Block::FooterBlock(footer_block) => {
                 self.db_context
                     .log_debug("[SSTableWriter] writing footer block".to_string());
                 let data = self.write_footer_block(footer_block)?;
+                self.total_bytes_written += data.len() as u64;
                 Ok(data)
             }
         }

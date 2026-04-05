@@ -8,3 +8,10 @@ pub(crate) fn sstable_path(config: &DBConfig, num: u64) -> PathBuf {
     sstable_path.push(format!("{}.dat", num));
     sstable_path
 }
+
+pub(crate) fn wal_path(config: &DBConfig, wal_id: u64) -> PathBuf {
+    let mut path = PathBuf::new();
+    path.push(config.data_dir());
+    path.push(format!("{}.wal", wal_id));
+    path
+}

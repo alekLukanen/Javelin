@@ -16,6 +16,11 @@ pub struct DBConfig {
 
     manifest_num_levels: usize,
 
+    compaction_level0_file_count_trigger: usize,
+    compaction_level_size_base: u64,
+    compaction_level_size_multiplier: u64,
+    compaction_output_file_size: u64,
+
     logging_enabled: bool,
     debug_logging_enabled: bool,
 }
@@ -64,6 +69,22 @@ impl DBConfig {
         self.manifest_num_levels.clone()
     }
 
+    pub fn compaction_level0_file_count_trigger(&self) -> usize {
+        self.compaction_level0_file_count_trigger
+    }
+
+    pub fn compaction_level_size_base(&self) -> u64 {
+        self.compaction_level_size_base
+    }
+
+    pub fn compaction_level_size_multiplier(&self) -> u64 {
+        self.compaction_level_size_multiplier
+    }
+
+    pub fn compaction_output_file_size(&self) -> u64 {
+        self.compaction_output_file_size
+    }
+
     pub fn logging_enabled(&self) -> bool {
         self.logging_enabled
     }
@@ -93,6 +114,10 @@ impl DBConfigBuilder {
                 manifest_num_levels: 3,
                 sstable_max_block_size: 2 << 14,
                 sstable_restart_interval: 4,
+                compaction_level0_file_count_trigger: 4,
+                compaction_level_size_base: 10 * 1024 * 1024,         // 10 MB
+                compaction_level_size_multiplier: 10,
+                compaction_output_file_size: 64 * 1024 * 1024,        // 64 MB
             },
         }
     }
@@ -158,6 +183,26 @@ impl DBConfigBuilder {
 
     pub fn manifest_num_levels(mut self, val: usize) -> DBConfigBuilder {
         self.config.manifest_num_levels = val;
+        self
+    }
+
+    pub fn compaction_level0_file_count_trigger(mut self, val: usize) -> DBConfigBuilder {
+        self.config.compaction_level0_file_count_trigger = val;
+        self
+    }
+
+    pub fn compaction_level_size_base(mut self, val: u64) -> DBConfigBuilder {
+        self.config.compaction_level_size_base = val;
+        self
+    }
+
+    pub fn compaction_level_size_multiplier(mut self, val: u64) -> DBConfigBuilder {
+        self.config.compaction_level_size_multiplier = val;
+        self
+    }
+
+    pub fn compaction_output_file_size(mut self, val: u64) -> DBConfigBuilder {
+        self.config.compaction_output_file_size = val;
         self
     }
 

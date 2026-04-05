@@ -30,4 +30,10 @@ mod test_skiplist;
 #[cfg(test)]
 mod test_sstable_builder;
 #[cfg(test)]
+mod test_manifest;
+#[cfg(test)]
+mod test_wal;
+#[cfg(test)]
 mod test_sstable_writer_reader;
+#[cfg(test)]
+mod test_compaction;

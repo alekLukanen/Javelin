@@ -136,6 +136,25 @@ impl BlockCacheShard {
             None => None,
         }
     }
+
+    fn evict_file(&mut self, file_id: u64) {
+        // Remove all data blocks for this file from the shard.
+        let keys_to_remove: Vec<(u64, u32)> = self
+            .data_blocks
+            .keys()
+            .filter(|(fid, _)| *fid == file_id)
+            .copied()
+            .collect();
+        for key in keys_to_remove {
+            self.data_blocks.remove(&key);
+        }
+        // Rebuild lru_list excluding entries for this file.
+        let old_lru = std::mem::take(&mut self.lru_list);
+        self.lru_list = old_lru
+            .into_iter()
+            .filter(|(fid, _)| *fid != file_id)
+            .collect();
+    }
 }
 
 pub struct BlockCache {
@@ -211,6 +230,20 @@ impl BlockCache {
                 meta: Arc::new(meta),
             },
         );
+        Ok(())
+    }
+
+    /// Evict all cached data for `file_id` (footer, index, meta, and all data blocks).
+    /// Called after compaction removes files from the SSTableVersion.
+    pub fn remove_sstable(&self, file_id: u64) -> Result<(), BlockCacheError> {
+        self.inner.sstables.lock()?.remove(&file_id);
+        let shard_idx = (file_id as usize) % self.inner.num_shards;
+        self.inner
+            .shards
+            .get(shard_idx)
+            .expect("expected shard")
+            .lock()?
+            .evict_file(file_id);
         Ok(())
     }
 

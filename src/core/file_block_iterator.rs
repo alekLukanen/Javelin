@@ -315,8 +315,8 @@ impl FileBlockIterator {
                                 }
                             }
                             Ordering::Equal | Ordering::Greater => {
-                                if left == 0 && right == 0 {
-                                    lowest_entry_offset = Some(entry_offset as u64);
+                                lowest_entry_offset = Some(entry_offset as u64);
+                                if middle == 0 {
                                     break;
                                 } else {
                                     right = middle - 1;
@@ -324,8 +324,10 @@ impl FileBlockIterator {
                             }
                         },
                         Ordering::Less => {
-                            if left == 0 && right == 0 {
-                                lowest_entry_offset = Some(entry_offset as u64);
+                            // lower_bound is before this restart — go left.
+                            // Do NOT update lowest_entry_offset (this restart is past our target).
+                            if middle == 0 {
+                                // Can't go further left; start from block beginning.
                                 break;
                             } else {
                                 right = middle - 1;

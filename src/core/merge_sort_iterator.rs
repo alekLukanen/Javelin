@@ -418,12 +418,38 @@ impl MergeSortIterator {
             level_ref.iters = iters;
             level_ref.loaded = true;
         } else {
-            // TODO: load the next sstable in the ordered list of files
-            self.db_context.log_error(format!(
-                "MergeSortIterator: levels above 0 are not supported | level={}",
-                level,
-            ));
-            todo!("MergeSortIterator: levels above 0 are not supported");
+            // Level > 0: files are non-overlapping and sorted by key range.
+            // Only load files whose [min_key, max_key] overlaps the query bounds.
+            let mut iters: Vec<Box<dyn SourceIterator>> = Vec::new();
+            for (file_num, meta) in sstables.iter() {
+                // Skip files entirely outside the query range
+                if let Some(upper) = &self.upper_bound {
+                    if meta.min_key.as_slice() > upper.as_slice() {
+                        continue;
+                    }
+                }
+                if let Some(lower) = &self.lower_bound {
+                    if meta.max_key.as_slice() < lower.as_slice() {
+                        continue;
+                    }
+                }
+                let iter = FileBlockIterator::new(
+                    self.db_context.clone(),
+                    self.block_cache.clone(),
+                    *file_num,
+                    self.log_sequence_num,
+                    self.lower_bound.clone(),
+                    self.upper_bound.clone(),
+                );
+                iters.push(Box::new(iter));
+            }
+
+            let level_ref = self
+                .sstable_level_iters
+                .get_mut(level)
+                .expect("MergeSortIterator: expected level iterator refs");
+            level_ref.iters = iters;
+            level_ref.loaded = true;
         }
         Ok(())
     }
